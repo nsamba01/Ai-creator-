@@ -81,6 +81,14 @@ et par `tests/security.test.js` (comportement).
   limites d'entrée, de taille décompressée et de ratio, `documents.service.js` pour
   CSV/TSV, JSON, Markdown, PDF FlateDecode heuristique, PNG/JPEG/GIF/WebP/BMP pour les
   dimensions). Aucun fichier utilisateur n'est ouvert par un binaire externe.
+* Vidéos : mêmes listes blanches, puis sondage **borné à la tête et à la queue du fichier**
+  (`src/services/video-probe.js`) — le média n'est jamais décodé ni écrit ailleurs. Un
+  conteneur inconnu, une géométrie aberrante ou un index manquant mettent l'actif en
+  `quarantined` avec un `error_code`, jamais en lecture. `ffprobe` est doublement gardé
+  (`VIDEO_USE_FFPROBE` **et** le réglage `video.use_ffprobe`), son chemin validé par
+  `safeBinaryPath()` (ni `..`, ni métacaractère, bit d'exécution obligatoire), appelé sans
+  shell avec une table d'arguments figée, un délai et un plafond de sortie d'1 Mio : aucun nom
+  fourni par le client n'atteint la ligne de commande.
 * Les sécrètes et données personnelles détectés dans un document sont **comptés**, jamais
   restitués (`redactHits`) ; le texte brut n'est renvoyé que sur demande explicite
   (`includeText`) et tronqué.
@@ -167,8 +175,13 @@ texte, donc une charge utile `<img onerror=…>` téléversée ou saisie reste i
    inoffensifs, non analysés en profondeur ; l'analyse PDF est heuristique (texte simple).
 4. Un seul nœud, base SQLite : la haute disponibilité et le partage de fichier entre répliques
    ne sont pas couverts (voir `VIDEO-AGENT.md` pour la mise à l'échelle des tâches longues).
-5. Le smoke test et les tests d'API ne remplacent pas un test navigateur (Playwright) : la
+5. Le rapport vidéo est **déclaratif** : il lit ce que l'en-tête du conteneur annonce. Un
+   fichier peut mentir sur sa durée ou sa résolution sans que la phase A le détecte ; c'est
+   pourquoi un résultat incohérent est mis en quarantaine et qu'aucun rendu n'est autorisé.
+   La vérification par décodage réel, la lecture en continu (`Range`) et le transcodage
+   restent à faire, dans un worker à part.
+6. Le smoke test et les tests d'API ne remplacent pas un test navigateur (Playwright) : la
    chaîne de rendu React est vérifiée par des assertions structurelles et l'absence de
    `dangerouslySetInnerHTML`, pas par un DOM réel.
-6. `npm audit` nécessite le registre ; hors ligne, l'audit le signale comme
+7. `npm audit` nécessite le registre ; hors ligne, l'audit le signale comme
    `ACTION NON EXÉCUTÉE` au lieu de conclure à tort.

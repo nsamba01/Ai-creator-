@@ -34,8 +34,11 @@ export function errorHandler(runtime) {
     const appErr = toAppError(err, internal());
     const status = appErr.status;
 
+    // Une 501 « non implémenté » ou une 503 de maintenance est une réponse **voulue** :
+    // ce n'est pas une défaillance, et l'écrire au niveau error tromperait la surveillance.
+    const deliberate = err instanceof AppError && (status === 501 || status === 503);
     if (status >= 500) {
-      logger.error('erreur non gérée', {
+      logger[deliberate ? 'warn' : 'error'](deliberate ? 'capacité annoncée indisponible' : 'erreur non gérée', {
         requestId: req.id,
         path: req.pathname,
         method: req.method,
@@ -44,15 +47,17 @@ export function errorHandler(runtime) {
         message: appErr.message,
         cause: appErr.cause ? redact(String(appErr.cause?.stack ?? appErr.cause?.message ?? appErr.cause)).slice(0, 800) : undefined,
       });
-      audit.record?.({
-        req,
-        actor: req.user ?? null,
-        action: 'system.error',
-        category: 'system',
-        outcome: 'error',
-        severity: 'warning',
-        detail: { code: appErr.code, status },
-      });
+      if (!deliberate) {
+        audit?.record?.({
+          req,
+          actor: req.user ?? null,
+          action: 'system.error',
+          category: 'system',
+          outcome: 'error',
+          severity: 'warning',
+          detail: { code: appErr.code, status },
+        });
+      }
     } else if (status === 429 || status === 423) {
       logger.warn('accès refusé temporaires', { requestId: req.id, path: req.pathname, code: appErr.code });
     }

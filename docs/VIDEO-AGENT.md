@@ -1,156 +1,215 @@
-# Agent Vidéo — architecture prévue
+# Agent Vidéo — architecture
 
-> **Statut : non implémenté.** Ce document est la conception validée pour la suite du
-> chantier. Rien de ce qui suit n'est présent dans le code à ce jour ; rien ne doit être
-> présenté comme fonctionnel. La section « Critères d'acceptation » est ce qui devra être
-> démontré par des tests pour que l'agent vidéo soit considéré comme terminé.
+> **Statut : phase A implémentée et testée ; phases B à D en conception.**
+> Ce document décrit d'abord ce qui est réellement dans le code (avec les chemins de
+> fichiers), puis ce qui reste à faire. Toute ligne qui n'est pas écrite est marquée
+> « prévu » ; rien n'est présenté comme fonctionnel sans test correspondant.
 
 ## Objectif
 
-Permettre à un utilisateur autorisé de confier une vidéo (téléversée ou adressée par URL)
-à un agent qui produit : un rapport technique (conteneur, flux, codecs, durée, débit,
-résolution, fréquence d'images), une extraction audio et une transcription, une planche de
-vignettes, une détection de parties silencieuses/noires, et une modération légère (liste
-d'interdits, présence de texte incrusté) — **sans jamais exécuter le média ni ouvrir de
+Permettre à un utilisateur autorisé de confier une vidéo (téléversée, plus tard adressée
+par URL) à un agent qui produit : un rapport technique (conteneur, pistes, codec, durée,
+résolution, débit, fréquence d'images), puis — après les phases suivantes — une extraction
+audio et une transcription, une planche de vignettes, une détection de parties
+silencieuses/noires et une modération légère — **sans jamais exécuter le média ni ouvrir de
 chemin arbitraire**.
 
-## Contrainte structurante n° 1 : sortir du processus web
+## Ce que la phase A fait réellement
 
-Aucun transcodage dans le serveur d'application. `ffmpeg`/`ffprobe` sont des binaires
-externes, gourmands, et historiquement attaquables par fichier malformé. Le média est donc
-traité par un **worker séparé**, dans un conteneur à part, avec :
+1. **Ingestion par le pipeline de fichiers existant.** Aucun chemin de stockage alternatif :
+   le média entre par `POST /api/files` (ou `POST /api/videos/upload`, qui appelle
+   `files.store` après un pré-filtre sur l'extension) et reçoît ainsi la liste blanche
+   d'extensions, le contrôle des octets de tête (`MAGIC`), la taille maximale, le nommage
+   UUID, le quota et le `owner_id`. `video/*` a rejoint `KIND_BY_EXT`, `MIME_FAMILIES` et
+   `MAGIC` dans `src/services/files.service.js` ; les extensions interdites
+   (`FORBIDDEN_EXTENSIONS`) restent exclues.
+2. **Déclaration d'un activer vidéo.** `video_assets` est une table fille de `files`
+   (`UNIQUE (file_id)`), donc une vidéo = un fichier, avec son propre état de traitement.
+   Redéclarer le même fichier renvoie l'état courant sans insérer de ligne ni de seconde
+   copie d'octets.
+3. **Sondage en lecture partielle.** `src/services/video-probe.js` analyse **la tête et la
+   queue du fichier uniquement** (fenêtre `VIDEO_PROBE_WINDOW_KIB`, 512 Kio par défaut),
+   jamais le fichier entier : MP4/MOV/M4V (boîtes `ftyp`/`moov`/`mvhd`/`tkhd`/`mdhd`/`stsd`/
+   `stts`, y compris `moov` écrit en fin de fichier), Matroska/WebM (EBML, `Info`, `Tracks`,
+   `Cluster`), AVI (`RIFF/AVI `, `hdrl/avih`, `strl/strh/strf`, `idx1`). Un conteneur
+   inconnu produit `VIDEO_UNSUPPORTED_CONTAINER`, pas une exception.
+4. **ffprobe optionnel, doublement gardé.** activé par `VIDEO_USE_FFPROBE=1` **et** le réglage
+   base `video.use_ffprobe` ; le binaire est validé par `safeBinaryPath()` (chemin absolu ou
+   nom simple, `[A-Za-z0-9._/-]` seulement, refus de `..`, existence + bit d'exécution),
+   exécuté **sans shell**, avec une table d'arguments figée, un `PATH` restreint, un délai
+   (`VIDEO_PROBE_TIMEOUT_MS`) et un plafond de sortie de 1 Mio. L'empreinte du fichier est
+   calculée côté serveur et n'atteint jamais la ligne de commande. En cas d'échec, on garde
+   le rapport d'en-têtes et on le note — aucune fausse valeur n'est inventée.
+5. **Quarantaine plutôt que rendu.** Durée hors bornes, géométrie incohérente, fichier
+   tronqué ou `moov` introuvable → l'actif passe en `quarantaine` avec un `error_code` ; le
+   rapport est quand même consultable, et la levée de quarantaine demande `videos:process`. Un
+   fichier incohérent n'est jamais « lu » ni monté. Le refus **conserve les faits déjà lus**
+   (conteneur, dimensions, codec, lecteur) : un rapport de quarantaine muet ne laisserait à
+   l'administrateur aucune matière pour trancher. Inversement, lever une quarantaine sur une
+   vidéo jamais sondée ne la déclare pas `ready` : elle repasse en `pending` et doit être
+   sondée.
+6. **Portée et journalisation.** Les requêtes sont filtrées par propriétaire sauf permission
+   `videos:read:any` ; les événements `video.registered`, `video.probed`, `video.quarantined` et
+   `video.released` sont écrits dans `audit_logs` (catégorie `agents`) avec des détails réduits :
+   identifiants, conteneur, état, taille — jamais l’empreinte complète, jamais de chemin disque
+   ni de nom de stockage. Vérifié sur la base de production : `SELECT count(*) FROM audit_logs
+   WHERE detail_json LIKE '%/home/%' OR detail_json LIKE '%data/uploads%'` → 0.
+7. **Interface.** `client/pages/Videos.jsx` (entrée « Agent vidéo », gardée par
+   `videos:read`) : compteurs de posture, téléversement, déclaration par identifiant, table
+   des rapports, fiche de détail avec pistes et notes, boutons de re-sondage et de
+   quarantaine — chaque action étant re-décidée par le serveur.
 
-* système de fichiers en lecture seule, sauf un répertoire de travail `tmpfs` monté `noexec`
-  **sauf** le sous-répertoire d'entrée, monté `noexec,nosuid,nodev` en lecture seule ;
-* `cap_drop: [ALL]`, `no-new-privileges`, aucun accès réseau (`network_mode: "none"`),
-  utilisateur non root, limites `cpus`, `pids`, `memory` ;
-* exécution avec un **délai dur** (`timeout`), une taille maximale en amont, et un
-  environnement vidé (`env -i`) ;
-* **aucun argument issu de l'utilisateur dans la ligne de commande** : uniquement le chemin
-  interne calculé par le serveur (UUID), passé après un `--`, et re-vérifié par
-  `resolveStored()` ; l'analyse d'URL réutilise `assertSafeUrl` (SSRF) avant tout
-  téléchargement ;
-* `ffprobe` d'abord (métadonnées seules), traitement seulement si les métadonnées sont
-  cohérentes (format sur liste blanche, durée ≤ `VIDEO_MAX_DURATION_S`, pas de flux de
-  données suspicieux).
+## Ce que la phase A ne fait pas (à ne pas vendre)
 
-## Chaîne de traitement
+* **aucun lecteur, aucun flux** : pas de `GET /api/videos/:id/stream`, pas de `Range`. Une
+  balise `<video>` sur une route non authentifiée serait une fuite ; la lecture en continu
+  authentifiée est la phase B ;
+* **aucun transcodage, aucune vignette, aucune transcription** : ni `ffmpeg`, ni ASR, ni
+  modèle chargé ;
+* **aucun collecte par URL** : `POST /api/videos/from-url` répond `501 NOT_IMPLEMENTED` —
+  l'agent de collecte refuse délibérément de télécharger un média tant que le bac à sable du
+  worker n'existe pas ;
+* **aucun plan d'exécution asynchrone** : le sondage est synchrone, borné à une fenêtre de
+  lecture, et ne crée pas de tâche `agent_tasks` (le champ `task_id` est posé, relié à la
+  phase B).
 
-```
-             (1) ingest                    (2) probe                 (3) transform
-API ──► files (kind=video) ──► agent_tasks (queued) ──► worker ──► ffprobe JSON ──► ffmpeg
-   │                                                            │        borné
-   │                                                            ▼
-   └──► audit + quota                                    (4) audio → ASR/sous-titres
-                                                              │
-                                                              ▼
-                                                   (5) artefacts : vignettes, waveforms,
-                                                       transcription, rapport
-                                                              │
-                                                              ▼
-                                                   (6) écriture du résultat + events d'audit
-```
+## Modèle de données (migration `004_video_agent.sql`, appliquée)
 
-1. **Ingestion** : le média entre par le pipeline de fichiers existant (liste blanche
-   d'extensions `.mp4 .m4v .mov .mkv .webm .avi`, types MIME conteneurs, contrôle des
-   octets signatures de tête : `ftyp`, `EBML`, `RIFF….AVI `, `matroska`), taille
-   `VIDEO_MAX_UPLOAD_MB`, quota `MAX_QUOTA_MB`, nommage UUID, propriétaire = l'utilisateur.
-   `video/*` doit rejoindre `KIND_BY_EXT` de `src/services/files.service.js`, rester absent de
-   `FORBIDDEN_EXTENSIONS`, obtenir une famille dans `MIME_FAMILIES` et une entrée dans `MAGIC`
-   (signatures de tête) ; la règle d'exécution reste « le fichier n'est
-   jamais servi pour lecture dans le navigateur » (l'élément `<video>` lira par l'API
-   authentifiée avec `Range`, jamais par une route statique publique).
-2. **Sondage** : `ffprobe -v error -print_format json -show_format -show_streams` borné à
-   10 s et 1 Mio de sortie ; rejet d'un fichier déclarant une durée ou un débit aberrants.
-3. **Transformation** : `ffmpeg` appelé avec une grille de recettes fermée
-   (`poster-3x3`, `audio-16k-mono`, `preview-720p`) — jamais de paramètres utilisateur
-   libres ; découpage par `-ss`/`-t` bornés, sortie dans le répertoire de travail, puis
-   promotion atomique vers le stockage.
-4. **Transcription** : `whisper.cpp` (ou équivalent local) dans le conteneur worker, modèle
-   chargé en lecture seule, langue par défaut `auto`, texte re-passé par la politique de
-   secret (`redactHits`) avant stockage ; l'audio n'est jamais conservé si
-   `VIDEO_KEEP_AUDIO=0` (défaut).
-5. **Artefacts** : chaque sortie devient une ligne `files` à part entière (même
-   `owner_id`, `sha`, `size_bytes`, `scan_status`) pour réutiliser le contrôle d'accès, le quota
-   et la suppression ; l'ajout d'une colonne `parent_file_id` (nullable, `ON DELETE CASCADE`)
-   dans la migration `004` est nécessaire pour rattacher l'artefact à sa source — elle
-   n'existe pas aujourd'hui.
-6. **Rapport** : agrégation dans `document_analyses` (ou `video_analyses`) + événement
-   d'audit ; le statut de la tâche est consultable (`GET /api/agents/tasks/:id`) et le
-   rapport se télécharge comme n'importe quel fichier.
-
-## Modèle de données additionnel (migration `004_video_agent.sql`)
-
-| Table | Colonnes utiles | Notes |
+| Table | Colonnes | Notes |
 |---|---|---|
-| `video_assets` | `file_id` (FK → `files`), `container`, `duration_ms`, `width`, `height`, `fps`, `bitrate`, `streams_json`, `probed_at`, `status` | `status ∈ (pending, probing, ready, failed, quarantined)` ; `CHECK` sur les bornes de durée/taille |
-| `video_analyses` | `video_id`, `kind`, `result_json`, `model`, `cost_ms`, `created_at` | un `kind` par recette ; `result_json` réduit avant stockage |
-| `agent_tasks` (existant) | `type='video.probe' \| 'video.transcode' \| 'video.transcribe'` | **la file existante sert de planeur** : `queued → running → succeeded/failed`, `attempts`, `run_after` (retry exponentiel), `locked_by`, `locked_at` |
-| `video_thumbnails` | `video_id`, `at_ms`, `file_id`, `width`, `height` | vignettes stockées comme fichiers, donc soumises au quota |
+| `video_assets` | `id`, `file_id` (UNIQUE, FK → `files` `ON DELETE CASCADE`), `owner_id`, `task_id`, `container`, `brand`, `codec`, `duration_ms`, `width`, `height`, `fps`, `bitrate_bps`, `track_count`, `index_entries`, `fragmented`, `truncated`, `parser`, `probe_source`, `status`, `error_code`, `meta_json`, `probed_at`, `created_at`, `updated_at`, `deleted_at` | `status ∈ (pending, probing, ready, failed, quarantined)` ; `probe_source ∈ (none, header, ffprobe, header+ffprobe)` ; `CHECK` de bornes sur durée, dimensions, débit, pistes ; `length(meta_json) ≤ 16000` ; `updated_at` entretenu par un déclencheur |
+| `video_analyses` | `id`, `video_id`, `kind`, `status`, `model`, `result_json`, `error_code`, `duration_ms`, `created_at`, `finished_at` | `kind ∈ (probe, transcode, transcribe, thumbnail, moderation)` ; **`UNIQUE (video_id, kind)`** : rejouer une analyse met à jour la ligne, n'ajoute rien |
+| `files` (existante) | `kind = 'video'` | le média lui-même, ses octets et son quota restent gérés ici |
+| `agent_tasks` (existante) | colonnes réelles : `id`, `ref`, `title`, `agent_role`, `status`, `priority`, `description`, `result_summary`, `required_permission`, `created_by`, `assigned_to`, `created_at`, `updated_at`, `completed_at` | la phase A y inscrit une tâche `agent_role='video'` et la passe à `done` (ou `failed`) à la fin du sondage, avec un `result_summary` lisible. **Il n'existe ni colonne `type`, ni `payload_json`, ni `result_json`, ni `attempts`, ni `run_after`, ni `locked_by`** — le plan d'exécution asynchrone devra être conçu avec les colonnes réellement disponibles, ou enrichi par une migration explicite |
 
-Index prévus : `video_assets(status)`, `agent_tasks(type, status, run_after)` pour le
-ramassage, `video_analyses(video_id, kind)` unique.
+Le rapport détaillé (pistes, notes, marque, conteneurs compatibles) tient dans `meta_json`,
+plafonné à 16 000 caractères. La réduction est faite **sur l’objet, jamais sur le texte**
+(`src/utils/json-limit.js`) : tableaux coupés de moitié, longues chaînes tronquées, puis un
+marqueur `truncated: true`. Un `JSON.stringify(x).slice(0, n)` produirait du JSON illisible que
+le lecteur avalerait en silence — la perte deviendrait invisible. Le dépôt refuse en plus
+d’écrire une chaîne qui ne se relit pas (`validJson`) et la remplace par un objet qui déclare la
+perte. Les deux comportements sont couverts par des tests.
 
-## Permissions nouvelles (28ᵉ à 30ᵉ)
+Index réels : `idx_video_assets_owner (owner_id, deleted_at)`,
+`idx_video_assets_status (status, id)`, `idx_video_assets_file (file_id)`,
+`idx_video_analyses_video (video_id, kind)` (plus la contrainte `UNIQUE`),
+`idx_agent_tasks_role_status (agent_role, status, id)` pour le ramassage de file.
 
-`videos:upload`, `videos:read:any`, `videos:process`. `ADMIN` les reçoit, `USER` reçoit
-`videos:upload` et `videos:read:any` **absent** (portée sur ses propres lignes, comme pour
-les fichiers). La file de tâches reste pilotée par `agents:manage`.
+## Permissions (28ᵉ à 31ᵉ de la liste — total 31)
 
-## API visée
+`videos:upload`, `videos:read`, `videos:read:any`, `videos:process` (catégorie `agents`, `is_dangerous = 0`). `ADMIN` reçoit les
+quatre ; `USER` reçoit `videos:upload` et `videos:read` **sans** `videos:read:any`
+(portée sur ses propres lignes, comme pour les fichiers) ni `videos:process`. La file de
+tâches reste pilotée par `agents:manage`.
+
+## API exposée
 
 ```
-POST /api/videos                 { fileId } ou { url }      → 202 { taskId }   videos:upload
-GET  /api/videos/:id             rapport + flux + vignettes  portée propriétaire
-GET  /api/videos/:id/stream      lecture Range authentifiée  portée propriétaire
-POST /api/videos/:id/retry       remise en file              videos:process
-GET  /api/agents/tasks/:id       statut, progression, erreurs normalisées
+POST /api/videos                 { fileId }                      → 201 { asset, analysis }   videos:upload
+POST /api/videos/upload          multipart `file`                 → 201 { file, asset, analysis, meta }   videos:upload
+POST /api/videos/from-url        { url }                           → 501 VIDEO_URL_NOT_IMPLEMENTED        videos:upload
+GET  /api/videos                 ?status&q&limit&offset&scope=mine → { items, total, limit, offset }   videos:read
+GET  /api/videos/stats           posture de l'agent                → { count, bytes, quarantined, limits }   videos:read
+GET  /api/videos/:id             asset + fichier + analyses        → { asset, file, analyses }   portée propriétaire
+POST /api/videos/:id/probe       re-sondage                          → { asset, analyses }   videos:upload (portée) ou videos:process
+POST /api/videos/:id/quarantine  mise en quarantaine { reason }      → { asset }   videos:process
+POST /api/videos/:id/release     levée de quarantaine                → { asset }   videos:process
 ```
 
-Réponses d'erreur : `VIDEO_TOO_LARGE`, `VIDEO_UNSUPPORTED_CONTAINER`, `VIDEO_PROBE_FAILED`,
-`VIDEO_BUSY` (quota de tâches parallèles par utilisateur), dans la forme `AppError`
-existante — jamais de sortie `ffmpeg` brute (les traces technique restent dans le journal).
+Codes d'erreur (forme `AppError`, jamais de sortie brute) : `VIDEO_FEATURE_DISABLED` (409, fonctionnalité
+éteinte), `VIDEO_NOT_A_VIDEO` (400, le fichier n’est pas de type `video`),
+`VIDEO_UNSUPPORTED_CONTAINER` (415), `VIDEO_HEADER_INCOMPLETE` (422),
+`VIDEO_DURATION_EXCEEDED` (422, mis en quarantaine), `VIDEO_DIMENSIONS_INVALID` (422),
+`VIDEO_PROBE_FAILED` (422), `VIDEO_QUARANTINED` (409), `VIDEO_URL_NOT_IMPLEMENTED` (501),
+plus les codes hérités du pipeline de fichiers et de l’authentification : `PAYLOAD_TOO_LARGE`
+(413 — c’est lui qui fait foi pour la taille, la limite appliquée aux vidéos étant le
+`min(MAX_UPLOAD_MB, VIDEO_MAX_UPLOAD_MB)` calculé au démarrage), `UNSUPPORTED_MEDIA_TYPE`
+(415), `NOT_FOUND` (404), `FORBIDDEN` (403), `BAD_REQUEST` (400). Un `ffprobe` configuré mais
+introuvable ne produit **aucun** code d’erreur : le rapport d’en-têtes est conservé et
+`meta.notes` l’explique. Jamais la sortie brute de l’outil : les traces techniques restent
+dans le journal.
 
-## Configuration prévue (à ajouter à `.env.example`, le lint l'exige)
+## Configuration réelle
 
-`VIDEO_MAX_UPLOAD_MB=200`, `VIDEO_MAX_DURATION_S=3600`, `VIDEO_WORKER_CONCURRENCY=1`,
-`VIDEO_TASK_TIMEOUT_MS=600000`, `VIDEO_KEEP_AUDIO=0`, `VIDEO_ALLOW_PRIVATE_SOURCES=0`
-(reprend la sémantique SSRF), `VIDEO_THUMBNAIL_COUNT=9`.
+Variables d'environnement (déclarées dans `.env.example`, sinon le lint refuse) :
+`VIDEO_MAX_UPLOAD_MB=64`, `VIDEO_MAX_DURATION_S=3600`, `VIDEO_PROBE_WINDOW_KIB=512`,
+`VIDEO_PROBE_TIMEOUT_MS=10000`, `VIDEO_USE_FFPROBE=1`, `FFPROBE_PATH=ffprobe`,
+`VIDEO_QUARANTINE_ON_FAILURE=1`. Il n'existe **pas** de `VIDEO_ENABLED` d'environnement : le
+ seul commutateur est le réglage en base, pour qu'un administrateur puisse l'activer sans
+redéploiement. La limite de téléversement appliquée aux vidéos est
+`min(MAX_UPLOAD_MB, VIDEO_MAX_UPLOAD_MB)` — la limite globale commande d'abord, un écart est
+signalé au démarrage par `config.video.warning`. C'est ce minimum qui est annoncé à `multer`
+(`limits.fileSize`) : le refus a donc lieu **pendant** la lecture du corps, et non après avoir
+stocké 10 Mo en mémoire pour les jeter juste après. Le formulaire n'accepte qu'un champ
+fichier (`fields: 1`).
 
-## Critères d'acceptation (à prouver par les tests)
+Réglages en base (page Configuration, validés par `settings.service`) : `video.enabled`
+(booléen, `false` par défaut), `video.max_duration_seconds` (entier 1–86400, `3600`),
+`video.use_ffprobe` (booléen, `true`).
 
-1. Un fichier qui n'est pas une vidéo mais porte une extension de vidéo est **refusé** aux
-   signatures binaires ; un fichier de plus de `VIDEO_MAX_UPLOAD_MB` est refusé avant écriture.
-2. Une URL vers `169.254.169.254`, `[::ffff:127.0.0.1]`, `host.docker.internal` est refusée
-   avant tout téléchargement ; le nom résolu est re-vérifié (rebind DNS).
-3. Aucun argument utilisateur n'atteint la ligne de commande : le test doit pouvoir tenter
-   `; rm -rf /`, `$(id)`, `-vf` injecté dans un nom de fichier, et montrer qu'ils sont traités
-   comme des noms de stockage, pas comme des commandes.
-4. Une tâche qui dépasse son délai est tuée par le `timeout` du worker, l'occupant est
-   relâché (`locked_by` remis à zéro), la tâche repasse en `queued` avec `attempts + 1`,
-   puis échoue définitivement après 3 tentatives sans laisser de fichier orphelin.
-5. Un worker qui meurt en cours de tâche ne bloque pas la file : rattrapage par
-   `locked_at` expiré (test avec `run_after` forcé).
-6. Le quota par utilisateur est respecté pour la source **et** les artefacts ; la suppression
-   de la source supprime logiquement les artefacts et retire les octets du disque.
-7. Deux utilisateurs ne peuvent ni lire ni relancer la tâche de l'autre (403 par
-   `requirePermission` + portée), y compris via l'identifiant de tâche.
-8. Une transcription contenant une clef privée ou un jeton est stockée réduite, et
-   l'audit ne contient pas le texte.
-9. `GET /api/videos/:id/stream` honore `Range`, renvoie `416` hors plage, et reste refusé
-   sans session valide.
-10. Le rapport complet est régénérable : rejouer une tâche ne duplique pas de données
-    (contrainte unique `(video_id, kind)`).
+## Critères d'acceptation prouvés par les tests
 
-## Découpage proposé
+`tests/videos.test.js` — 23 sous-tests, tous verts, exécutés par `npm run check` :
 
-| Phase | Contenu | Risque principal |
-|---|---|---|
-| A | `004_video_agent.sql`, `kind` vidéo, liste blanche d'extensions, rapport `ffprobe` seul (**aucun transcodage**) | faible — lecture seule, pas d'écriture de média |
-| B | worker conteneur + file (claim, timeout, retries, idempotence) | concurrence et tâches orphelines |
-| C | vignettes + audio + transcription | coût CPU, poids du modèle ASR |
-| D | modération légère, rapports composites, interface `client/pages/Videos.jsx` | surface UX |
+1. refus de toute déclaration tant que `video.enabled` est faux, puis acceptation après
+   activation par `PUT /api/admin/settings` ;
+2. géométrie réellement restituée pour MP4, WebM, AVI (durée, dimensions, codec, nombre de
+   pistes lus dans l'en-tête construit par le test, confronté au parseur) ;
+3. relit un MP4 dont la `moov` est en fin de fichier (fenêtre de queue) ;
+4. faux `.mp4` refusé à l'ingestion, PNG renommé `.mp4` refusé à l'entrée vidéo directe
+   (`415`), rien d'écrit en base ;
+5. durée hors limite → `quarantined` + `error_code`, **avec conteneur, dimensions et lecteur
+   conservés dans le rapport**, levée exigeant `videos:process` (403 pour `USER`, 200 pour
+   `ADMIN`) ; une vidéo jamais sondée levée de quarantaine repasse en `pending`, jamais en
+   `ready` ;
+6. un compte standard ne lit pas la vidéo d'un autre (403 + liste filtrée), identifiant
+   inconnu → 404, tentative de déclarer le fichier d'autrui → 403, aucun chemin serveur dans
+   la réponse ;
+7. idempotence de la déclaration (aucune ligne ni octet dupliqué), re-sondage qui met à jour
+   le rapport `probe` sans doubler la ligne ;
+8. `from-url` → 501 explicite ;
+9. aucune empreinte complète ni chemin d'aucune sorte dans les rapports ;
+10. suppression logique du fichier source → actif soft-supprimé, et la requête de l'auteur
+    comme la vue globale renvoient 404 ;
+11. `ffprobeRunner` injecté : le rapport `header+ffprobe` est fusionné, l'argument passé est
+    le **chemin de stockage**, jamais le nom fourni par le client ; un chemin de binaire
+    douteux, un délai expiré ou une exécution impossible font retomber sur le sondage d'en-
+    têtes avec une note, sans faute 500 ;
+12. `safeBinaryPath` refuse les métacaractères, la traversée et les binaires absents ;
+13. `fromFfprobe` borne les valeurs (débit > 1 Tbit/s, pistes > 64, méta > 64 Kio) ;
+14. les contraintes `CHECK` de la base refusent durée négative, statut et source inconnus ;
+15. `audit_logs` journalise le sondage avec l'empreinte tronquée, sans `/var`/`/srv`/
+    `/app`/`/home` ;
+16. conteneur inconnu → `ok:false` + `errorCode`, sans exception ;
+17. `/api/videos/stats` expose compteurs et bornes effectives ;
+18. un rapport démesuré (4 000 pistes, 400 notes de 400 caractères) reste **valide et borné**
+    en base, avec `truncated: true` ; une chaîne volontairement cassée soumise au dépôt est
+    remplacée par un objet honnête, jamais stockée telle quelle.
 
-Phase A est livrable sans le moindre binaire externe supplémentaire si `ffprobe` est rendu
-optionnel : en son absence, le rapport se limite à l'en-tête du conteneur (boîtes `ftyp`
-explorées en JS), ce qui reste utile et ne change rien au modèle de sécurité.
+## Contraintes structurantes conservées pour les phases B à D
+
+Aucun transcodage dans le processus web. `ffmpeg` est un binaire externe, gourmand et
+historiquement attaquable par fichier malformé : le média sera traité par un **worker
+séparé**, dans un conteneur à part, avec système de fichiers en lecture seule sauf un
+répertoire de travail `tmpfs` monté `noexec`, `cap_drop: [ALL]`, `no-new-privileges`,
+`network_mode: "none"`, utilisateur non root, limites `cpus`/`pids`/`memory`, délai dur,
+environnement vidé (`env -i`), et **aucun argument issu de l'utilisateur dans la ligne de
+commande**. Le re-sondage par `ffprobe` d'une phase à l'autre garde les mêmes bornes.
+
+* **Phase B** — `GET /api/videos/:id/stream` authentifié avec `Range` (206/416), plan d'exé-
+  cution asynchrone sur `agent_tasks` (claim, délai, reprise après incident, idempotence),
+  artefacts rattachés par une colonne `parent_file_id` de `files` (nullable,
+  `ON DELETE CASCADE` — elle n'existe pas aujourd'hui).
+* **Phase C** — vignettes (`thumbnail`), extraction audio et transcription locale ; le texte
+  produit repasse par la politique de secret (`redactHits`) avant stockage, et l'audio n'est
+  pas conservé par défaut.
+* **Phase D** — collecte par URL (réutilise `assertSafeUrl`, re-vérification du nom résolu
+  contre le rebind DNS, plafond de taille et de durée pendant le téléchargement), modération
+  légère, rapports composites.
+
+## Risque principal restant
+
+Le sondage est **déclaratif** : il lit ce que l'en-tête annonce. Un fichier peut mentir dans
+son en-tête sans que la phase A le détecte ; c'est précisément pourquoi un résultat
+incohérent met en quarantaine et n'autorise aucun rendu. La vérification par décodage réel
+reste à la phase B/C, dans le worker.

@@ -81,16 +81,18 @@ docker/         entrypoint.sh
 10. `error-handler` : les `AppError` rendent statut + code machine + message sûr ; toute autre erreur devient
    un 500 générique **sans pile, sans SQL, sans chemin absolu** (la cause n'est gardée que dans le journal).
 
-## Modèle de données (16 tables)
+## Modèle de données (18 tables)
 
 * **Identité** : `users` (hash PHC + paramètres de hachage + `must_change_password` + verrouillage + `deleted_at`),
-  `roles`, `permissions` (27 clés), `user_roles`, `role_permissions`, `settings` (10 clés typées, bornées,
+  `roles`, `permissions` (31 clés), `user_roles`, `role_permissions`, `settings` (13 clés typées, bornées,
   `is_public`).
 * **Sessions** : `sessions` (empreinte de jeton, `csrf_token`, expiration, révocation motivée, empreintes
   IP/UA), `refresh_tokens` (rotation + `family_id` pour la détection de réemploi), `password_reset_tokens`,
   `login_attempts` (fenêtre persistante, indépendante du vidage mémoire).
 * **Métier** : `files` (propriétaire, empreinte SHA-256, taille, type détecté, `magic_ok`, compteur de
-  téléchargements, `deleted_at`), `document_analyses`, `url_analyses`, `agent_tasks`.
+  téléchargements, `deleted_at`), `document_analyses`, `url_analyses`, `agent_tasks`,
+  `video_assets` (rapport de sondage d'un fichier `kind='video'`, `UNIQUE (file_id)`, quarantaine),
+  `video_analyses` (une ligne par `kind` et par vidéo, `UNIQUE (video_id, kind)`).
 * **Preuve** : `audit_logs` (append-only), `schema_migrations` (empreinte de chaque fichier de migration).
 
 Contraintes actives : clés étrangères (`PRAGMA foreign_keys = ON`), `CHECK` sur les énumérés, `UNIQUE` sur
@@ -99,8 +101,10 @@ e-mail/identifiant/nom de rôle/clé de permission/paires, index sur les colonne
 
 ## Extensions prévues
 
-* **Agent Vidéo** : architecture et critères d'acceptation dans [`VIDEO-AGENT.md`](VIDEO-AGENT.md) —
-  non implémenté à ce jour, et volontairement hors du processus web.
+* **Agent Vidéo** : phase A livrée (déclaration, sondage d'en-têtes en lecture par fenêtres,
+  quarantaine, quatre permissions, `client/pages/Videos.jsx`). Le transcodage, la lecture en
+  continu par `Range` et la transcription restent hors du processus web et sont décrits dans
+  [`VIDEO-AGENT.md`](VIDEO-AGENT.md).
 * **Stockage objet** : `files.service.js` centralise écriture/lecture ; un adaptateur S3 remplacerait le
   système de fichiers sans toucher les routes.
 * **Postgres** : les requêtes sont dans les dépôts (`src/repositories`) ; le portage se limite à la syntaxe

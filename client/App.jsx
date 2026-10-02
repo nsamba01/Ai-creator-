@@ -9,6 +9,7 @@ import Sessions from './pages/Sessions.jsx';
 import Audit from './pages/Audit.jsx';
 import Files from './pages/Files.jsx';
 import Documents from './pages/Documents.jsx';
+import Videos from './pages/Videos.jsx';
 import Urls from './pages/Urls.jsx';
 import Agents from './pages/Agents.jsx';
 import Settings from './pages/Settings.jsx';
@@ -24,6 +25,7 @@ const NAV = [
   { id: '/audit', label: 'Journal d’audit', icon: '≣', component: Audit, permission: 'audit:read' },
   { id: '/files', label: 'Fichiers', icon: '⎘', component: Files },
   { id: '/documents', label: 'Documents', icon: '❐', component: Documents, permission: 'documents:analyze' },
+  { id: '/videos', label: 'Agent vidéo', icon: '⏵', component: Videos, permission: 'videos:read' },
   { id: '/urls', label: 'Analyse d’URL', icon: '⌁', component: Urls, permission: 'urls:analyze' },
   { id: '/agents', label: 'Agents IA', icon: '⟟', component: Agents, permission: 'agents:read' },
   { id: '/security', label: 'Sécurité', icon: '⛨', component: Security },

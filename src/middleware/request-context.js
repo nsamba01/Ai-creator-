@@ -20,7 +20,10 @@ export function createRequestContext(config) {
     res.on('finish', () => {
       // Access log line: no query string (it may carry tokens), no cookies.
       const ms = Date.now() - req.startedAt;
-      const level = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info';
+      // 501 (« non implémenté », assumé) et 503 (maintenance) ne sont pas des pannes :
+      // les journaliser en `error` déclencherait des alertes pour rien.
+      const declared = res.statusCode === 501 || res.statusCode === 503;
+      const level = res.statusCode >= 500 && !declared ? 'error' : res.statusCode >= 400 ? 'warn' : 'info';
       logger[level](`${req.method} ${req.pathname} ${res.statusCode} ${ms}ms`, {
         requestId: req.id,
         status: res.statusCode,

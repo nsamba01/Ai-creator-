@@ -208,6 +208,20 @@ export function loadConfig(env = process.env, overrides = {}) {
       enforceMagic: bool(env.FILE_SCAN_ENFORCE_MAGIC, true),
     },
 
+    // Phase A de l'agent Video : fenetres de lecture et bornes de coherence.
+    // maxBytes est forcement <= uploads.maxBytes : la limite de multer reste la
+    // vraie barriere memoire, relever VIDEO_MAX_UPLOAD_MB sans relever
+    // MAX_UPLOAD_MB n'aurait donc aucun effet (c'est voulu et documente).
+    video: {
+      maxBytes: int(env.VIDEO_MAX_UPLOAD_MB, 64, { min: 1, max: 512 }) * 1024 * 1024,
+      maxDurationMs: int(env.VIDEO_MAX_DURATION_S, 3600, { min: 1, max: 86_400 }) * 1000,
+      probeWindowBytes: int(env.VIDEO_PROBE_WINDOW_KIB, 512, { min: 32, max: 16_384 }) * 1024,
+      probeTimeoutMs: int(env.VIDEO_PROBE_TIMEOUT_MS, 10_000, { min: 250, max: 60_000 }),
+      useFfprobe: bool(env.VIDEO_USE_FFPROBE, true),
+      ffprobePath: String(env.FFPROBE_PATH ?? 'ffprobe').trim() || 'ffprobe',
+      quarantineOnFailure: bool(env.VIDEO_QUARANTINE_ON_FAILURE, true),
+    },
+
     url: {
       timeoutMs: int(env.URL_FETCH_TIMEOUT_MS, 5000, { min: 250, max: 60_000 }),
       maxBytes: int(env.URL_MAX_BYTES, 2_000_000, { min: 1024, max: 50_000_000 }),
@@ -245,6 +259,12 @@ export function loadConfig(env = process.env, overrides = {}) {
     if (!cfg.csrfEnabled) problems.push(' CSRF_PROTECTION doit rester actif en production.');
     if (cfg.authDisabledRequested) problems.push(' DISABLE_AUTH_FOR_TESTS est interdit en production.');
     if (cfg.cors.allowedOrigins.has('*')) problems.push(' CORS_ALLOWED_ORIGINS=* interdit avec des cookies.');
+    if (cfg.video.maxBytes > cfg.uploads.maxBytes) {
+      cfg._videoHint =
+        `VIDEO_MAX_UPLOAD_MB (${Math.round(cfg.video.maxBytes / 1048576)} Mo) depasse MAX_UPLOAD_MB (${Math.round(
+          cfg.uploads.maxBytes / 1048576,
+        )} Mo) : la limite globale s’applique d’abord ; relevez MAX_UPLOAD_MB pour accepter de plus grosses videos.`;
+    }
     if (String(env.HOST ?? '0.0.0.0') === '127.0.0.1' && !env.FORCE_LOCALHOST_WARNING) {
       // not fatal, just a hint logged later
       cfg._hostHint = 'HOST=127.0.0.1 rendra le service injoignable depuis le réseau/le proxy.';
@@ -262,6 +282,7 @@ export function loadConfig(env = process.env, overrides = {}) {
     limits: Object.freeze(cfg.limits),
     bootstrapAdmin: Object.freeze(cfg.bootstrapAdmin),
     uploads: Object.freeze(cfg.uploads),
+    video: Object.freeze(cfg.video),
     url: Object.freeze({ ...cfg.url, allowedPorts: cfg.url.allowedPorts }),
     cors: Object.freeze({ allowedOrigins: cfg.cors.allowedOrigins }),
     secrets: Object.freeze(cfg.secrets),

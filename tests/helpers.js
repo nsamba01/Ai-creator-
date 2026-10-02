@@ -427,3 +427,174 @@ export function multipart(fieldName, { filename, contentType, buffer, fields = {
     body: Buffer.concat([...head, fileHead, buffer, tail]),
   };
 }
+
+/* ------------------------------------------------------------------ vidéo */
+// Les fabricants ci-dessous produisent de VRAIS en-têtes de conteneurs (tailles
+// de boîtes cohérentes, champs conformes aux structures publiées) : le sondeur
+// est ainsi testé sur des fichiers que `ffprobe` lirait aussi, pas sur des
+// approximations.
+
+const be32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32BE(n >>> 0, 0); return b; };
+const le32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n >>> 0, 0); return b; };
+const le16 = (n) => { const b = Buffer.alloc(2); b.writeUInt16LE(n & 0xffff, 0); return b; };
+const uintBe = (n, bytes = 4) => {
+  const b = Buffer.alloc(bytes);
+  let v = Number(BigInt.asUintN(bytes * 8, BigInt(n)));
+  for (let i = bytes - 1; i >= 0; i -= 1) { b[i] = v & 0xff; v = Math.floor(v / 256); }
+  return b;
+};
+const ascii = (s, len = s.length) => Buffer.concat([Buffer.from(s, 'latin1'), Buffer.alloc(Math.max(0, len - s.length), 0)]).subarray(0, len);
+const MATRIX33 = Buffer.concat([be32(0x00010000), be32(0), be32(0), be32(0), be32(0x00010000), be32(0), be32(0), be32(0), be32(0x40000000)]);
+
+/** Boîte ISO BMFF : taille déclarée en grand boutien, puis type. */
+function mp4Box(type, payload) {
+  return Buffer.concat([be32(8 + payload.length), Buffer.from(type, 'latin1'), payload]);
+}
+
+/** En-tête d'images MP4/MOV minimal mais conforme (faststart : moov avant mdat). */
+export function buildMp4({
+  brand = 'isom',
+  timescale = 1000,
+  durationMs = 4000,
+  width = 1280,
+  height = 720,
+  codec = 'avc1',
+  mediaTimescale = 25,
+  sampleDelta = 1,
+  handler = 'vide',
+  mdatSize = 2048,
+  tailMode = false,
+} = {}) {
+  const ftyp = Buffer.concat([ascii(brand, 4), be32(0x200), ascii('isomiso2avc1mp41', 20)]);
+  const mvhd = Buffer.concat([
+    Buffer.alloc(4), be32(0), be32(0), be32(timescale), be32(Math.round((durationMs * timescale) / 1000)),
+    be32(0x00010000), be16(0x0100), Buffer.alloc(2), MATRIX33, Buffer.alloc(24), be32(2),
+  ]);
+  const tkhd = Buffer.concat([
+    Buffer.from([0, 0, 0, 7]), be32(0), be32(0), be32(1), be32(0), be32(Math.round((durationMs * timescale) / 1000)),
+    Buffer.alloc(8), be16(0), be16(0), be16(0x0100), be16(0), MATRIX33, be32(width * 65536), be32(height * 65536),
+  ]);
+  const mdhd = Buffer.concat([Buffer.alloc(4), be32(0), be32(0), be32(mediaTimescale), be32(durationMs * mediaTimescale / 1000), be32(0)]);
+    const hdlr = Buffer.concat([Buffer.alloc(4), be32(0), ascii(handler, 4), Buffer.alloc(12), ascii(`${handler} handler`, 16)]);
+  const stsdEntry = Buffer.concat([be32(8 + 8 + 4 + 16 + 4), ascii(codec, 4), Buffer.alloc(6), be32(1), Buffer.alloc(16), be32(0)]);
+  const stsd = Buffer.concat([Buffer.alloc(4), be32(1), stsdEntry]);
+  const stts = Buffer.concat([Buffer.alloc(4), be32(1), be32(Math.round((durationMs / 1000) * mediaTimescale / sampleDelta)), be32(sampleDelta)]);
+  const stbl = mp4Box('stbl', Buffer.concat([mp4Box('stsd', stsd), mp4Box('stts', stts)]));
+  const minf = mp4Box('minf', stbl);
+  const mdia = mp4Box('mdia', Buffer.concat([mp4Box('mdhd', mdhd), mp4Box('hdlr', hdlr), minf]));
+  const trak = mp4Box('trak', Buffer.concat([mp4Box('tkhd', tkhd), mdia]));
+  const moov = mp4Box('moov', Buffer.concat([mp4Box('mvhd', mvhd), trak]));
+  const mdat = mp4Box('mdat', Buffer.alloc(mdatSize, 0x21));
+  const head = Buffer.concat([mp4Box('ftyp', ftyp), tailMode ? mdat : moov]);
+  return tailMode ? Buffer.concat([head, moov]) : Buffer.concat([head, mdat]);
+}
+
+function be16(v) { const b = Buffer.alloc(2); b.writeUInt16BE(v & 0xffff, 0); return b; }
+
+/** En-tête EBML de taille variable (bit de marque inclus dans l'identifiant). */
+function ebmlElement(idBytes, payload) {
+  const len = payload.length;
+  let size;
+  if (len < 0x7f) size = Buffer.from([0x80 | len]);
+  else if (len < 0x3fff) size = Buffer.from([0x40 | (len >> 8), len & 0xff]);
+  else if (len < 0x1fffff) size = Buffer.from([0x20 | (len >> 16), (len >> 8) & 0xff, len & 0xff]);
+  else size = Buffer.from([0x10 | (len >> 24), (len >> 16) & 0xff, (len >> 8) & 0xff, len & 0xff]);
+  return Buffer.concat([idBytes, size, payload]);
+}
+
+const ID = {
+  ebml: Buffer.from([0x1a, 0x45, 0xdf, 0xa3]),
+  doctype: Buffer.from([0x42, 0x82]),
+  doctypeVersion: Buffer.from([0x42, 0x87]),
+  version: Buffer.from([0x42, 0x86]),
+  segment: Buffer.from([0x18, 0x53, 0x80, 0x67]),
+  info: Buffer.from([0x15, 0x49, 0xa9, 0x66]),
+  timecodeScale: Buffer.from([0x2a, 0xd7, 0xb1]),
+  duration: Buffer.from([0x44, 0x89]),
+  tracks: Buffer.from([0x16, 0x54, 0xae, 0x6b]),
+  track: Buffer.from([0xae]),
+  trackNumber: Buffer.from([0xd7]),
+  trackType: Buffer.from([0x83]),
+  codecId: Buffer.from([0x86]),
+  defaultDuration: Buffer.from([0x23, 0x83, 0xe8]),
+  video: Buffer.from([0xe0]),
+  audio: Buffer.from([0xe1]),
+  pixelWidth: Buffer.from([0xb0]),
+  pixelHeight: Buffer.from([0xba]),
+  cluster: Buffer.from([0x1f, 0x43, 0xb6, 0x75]),
+};
+
+/** WebM/Matroska minimal : en-tête EBML + Info + deux pistes + une grappe. */
+export function buildWebm({ doctype = 'webm', timecodeScale = 1_000_000, durationMs = 3200, width = 640, height = 360, videoCodec = 'V_VP8', audioCodec = 'A_VORBIS', fps = 25 } = {}) {
+  const header = ebmlElement(ID.ebml, Buffer.concat([
+    ebmlElement(ID.version, uintBe(1, 1)),
+    ebmlElement(ID.doctype, Buffer.from(doctype, 'latin1')),
+    ebmlElement(ID.doctypeVersion, uintBe(4, 1)),
+  ]));
+  const info = ebmlElement(ID.info, Buffer.concat([
+    ebmlElement(ID.timecodeScale, uintBe(timecodeScale, 4)),
+    ebmlElement(ID.duration, float64Be((durationMs * 1_000_000) / timecodeScale)),
+  ]));
+  const videoTrack = ebmlElement(ID.track, Buffer.concat([
+    ebmlElement(ID.trackNumber, uintBe(1, 1)),
+    ebmlElement(ID.trackType, uintBe(1, 1)),
+    ebmlElement(ID.codecId, Buffer.from(videoCodec, 'latin1')),
+    ebmlElement(ID.defaultDuration, uintBe(Math.round(1_000_000_000 / fps), 8)),
+    ebmlElement(ID.video, Buffer.concat([ebmlElement(ID.pixelWidth, uintBe(width, 2)), ebmlElement(ID.pixelHeight, uintBe(height, 2))])),
+  ]));
+  const audioTrack = ebmlElement(ID.track, Buffer.concat([
+    ebmlElement(ID.trackNumber, uintBe(2, 1)),
+    ebmlElement(ID.trackType, uintBe(2, 1)),
+    ebmlElement(ID.codecId, Buffer.from(audioCodec, 'latin1')),
+    ebmlElement(ID.audio, Buffer.alloc(0)),
+  ]));
+  const tracks = ebmlElement(ID.tracks, Buffer.concat([videoTrack, audioTrack]));
+  const cluster = ebmlElement(ID.cluster, Buffer.alloc(24, 0x5a));
+  return Buffer.concat([header, ebmlElement(ID.segment, Buffer.concat([info, tracks, cluster]))]);
+}
+
+function float64Be(v) { const b = Buffer.alloc(8); b.writeDoubleBE(v, 0); return b; }
+
+/** AVI (RIFF) : en-tête principal + une piste vidéo + BITMAPINFOHEADER + index. */
+export function buildAvi({ microSecPerFrame = 40_000, frames = 100, width = 640, height = 480, codec = 'DIVX', entries = 2 } = {}) {
+  const avih = Buffer.concat([
+    le32(microSecPerFrame), le32(0), le32(0), le32(0x10), le32(1), le32(0), le32(0), le32(0),
+    le32(width), le32(height), Buffer.alloc(16),
+  ]);
+  // AVISTREAMHEADER : fccType 0, fccHandler 4, dwFlags 8, prio/lang 12,
+  // dwInitialFrames 16, dwScale 20, dwRate 24, dwStart 28, dwLength 32,
+  // dwSuggestedBufferSize 36, dwPreroll 40, dwQuality 44, dwSampleSize 48, rcFrame 52.
+  const strh = Buffer.concat([
+    ascii('vids', 4),
+    ascii(codec, 4),
+    le32(0), // dwFlags
+    le32(0), // wPriority + wLanguage
+    le32(0), // dwInitialFrames
+    le32(1), // dwScale
+    le32(Math.round(1_000_000 / microSecPerFrame)), // dwRate  (25 images/seconde avec 40 000 µs)
+    le32(0), // dwStart
+    le32(frames), // dwLength
+    le32(0), // dwSuggestedBufferSize
+    le32(0), // dwPreroll
+    le32(0xffffffff), // dwQuality
+    le32(0), // dwSampleSize
+    Buffer.alloc(16), // rcFrame
+  ]);
+  const strf = Buffer.concat([
+    le32(40), le32(width), le32(height), le16(1), le16(24), ascii(codec, 4), le32(width * height * 3), le32(0), le32(0), le32(0), le32(0),
+  ]);
+  const strl = LIST('strl', Buffer.concat([chunk('strh', strh), chunk('strf', strf)]));
+  const hdrl = LIST('hdrl', Buffer.concat([chunk('avih', avih), strl]));
+  const idx1 = Buffer.concat(Array.from({ length: entries }, () => Buffer.concat([ascii('00db', 4), le32(0x10), le32(64), le32(1)])));
+  const movi = LIST('movi', chunk('00db', Buffer.alloc(64, 0x33)));
+  const body = Buffer.concat([hdrl, movi, chunk('idx1', idx1)]);
+  return Buffer.concat([ascii('RIFF', 4), le32(4 + body.length), ascii('AVI ', 4), body]);
+}
+
+function chunk(id, payload) {
+  const pad = payload.length % 2;
+  return Buffer.concat([ascii(id, 4), le32(payload.length), payload, Buffer.alloc(pad)]);
+}
+function LIST(kind, inner) {
+  return Buffer.concat([ascii('LIST', 4), le32(inner.length + 4), ascii(kind, 4), inner]);
+}

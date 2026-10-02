@@ -42,6 +42,15 @@ export const KIND_BY_EXT = {
   '.yml': 'text',
   '.yaml': 'text',
   '.xml': 'text',
+  // Conteneurs video acceptes en phase A (sondage d'en-tete uniquement). Un
+  // fichier dont la signature ne correspond pas au conteneur revendique est
+  // refuse plus bas par MAGIC : l'extension ne suffit jamais.
+  '.mp4': 'video',
+  '.m4v': 'video',
+  '.mov': 'video',
+  '.mkv': 'video',
+  '.webm': 'video',
+  '.avi': 'video',
 };
 
 /** Refused outright: executable or browser-renderable content. */
@@ -73,6 +82,12 @@ const MIME_FAMILIES = {
   '.yml': ['text/yaml', 'text/plain'],
   '.yaml': ['text/yaml', 'text/plain'],
   '.xml': ['text/xml', 'application/xml', 'text/plain'],
+  '.mp4': ['video/mp4', 'video/x-m4v'],
+  '.m4v': ['video/x-m4v', 'video/mp4'],
+  '.mov': ['video/quicktime', 'video/x-quicktime', 'video/mp4'],
+  '.mkv': ['video/x-matroska', 'video/matroska'],
+  '.webm': ['video/webm'],
+  '.avi': ['video/x-msvideo', 'video/avi', 'avi'],
 };
 
 const MAGIC = [
@@ -87,6 +102,10 @@ const MAGIC = [
   { ext: ['.bmp'], mime: 'image/bmp', test: (b) => b.length > 2 && b[0] === 0x42 && b[1] === 0x4d },
   { ext: ['.pdf'], mime: 'application/pdf', test: (b) => b.length > 5 && b.subarray(0, 5).toString('latin1') === '%PDF-' },
   { ext: ['.docx', '.xlsx'], mime: 'application/zip', test: (b) => b.length > 4 && b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04 },
+  // Conteneurs video : la signature du conteneur, pas le nom du fichier.
+  { ext: ['.mp4', '.m4v', '.mov'], mime: 'video/mp4', test: (b) => b.length > 12 && b.subarray(4, 8).toString('latin1') === 'ftyp' },
+  { ext: ['.mkv', '.webm'], mime: 'video/matroska', test: (b) => b.length > 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3 },
+  { ext: ['.avi'], mime: 'video/x-msvideo', test: (b) => b.length > 12 && b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'AVI ' },
 ];
 
 const TEXTUAL = new Set(['.txt', '.md', '.log', '.yml', '.yaml', '.csv', '.tsv', '.json', '.xml']);
@@ -305,7 +324,11 @@ export function createFileService({ db, config, audit }) {
     const row = db.get(`SELECT * FROM files WHERE id = ? AND deleted_at IS NULL`, [id]);
     if (!row) throw notFound('Fichier introuvable.');
     const abs = resolveStored(row.relative_path);
-    db.run(`UPDATE files SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), id]);
+    const when = new Date().toISOString();
+    db.run(`UPDATE files SET deleted_at = ? WHERE id = ?`, [when, id]);
+    // Les rapports de sondage suivent leur source : sinon une ligne video
+    // orpheline resterait consultable apres la suppression du fichier.
+    db.run(`UPDATE video_assets SET deleted_at = ?, updated_at = ? WHERE file_id = ? AND deleted_at IS NULL`, [when, when, id]);
     try {
       if (fs.existsSync(abs)) fs.unlinkSync(abs);
     } catch (err) {

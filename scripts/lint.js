@@ -206,7 +206,12 @@ if (fs.existsSync(envExample)) {
     if (!CODE_EXT.has(path.extname(file))) continue;
     for (const m of fs.readFileSync(file, 'utf8').matchAll(/\b(?:env|process\.env)\.([A-Z][A-Z0-9_]{2,})\b/g)) used.add(m[1]);
   }
-  const missing = [...used].filter((k) => !sample.has(k) && k !== 'NODE_ENV');
+  // Les variables héritées du processus ne sont pas une configuration applicative : les
+  // exiger dans .env reviendrait à laisser un déploiement détourner la résolution des
+  // binaires (PATH) ou le répertoire d’exécution (HOME). Elles sont donc documentées par
+  // le code, pas par l’exemple. NODE_ENV y figure pour la même raison.
+  const OS_INHERITED = new Set(['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ', 'NODE_ENV', 'NODE_OPTIONS']);
+  const missing = [...used].filter((k) => !sample.has(k) && !OS_INHERITED.has(k));
   if (missing.length) flag(path.join(ROOT, '.env.example'), null, `clés utilisées par le code mais absentes de l’exemple : ${missing.join(', ')}`);
   notes.push(`Variables d’environnement documentées : ${sample.size} ; utilisées par le code : ${used.size}.`);
 if (allowances) notes.push(`Dérogations « lint-allow » comptées : ${allowances} — chacune doit être justifiée en revue.`);

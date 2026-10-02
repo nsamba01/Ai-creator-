@@ -20,6 +20,7 @@ import { createFileRoutes } from './files.routes.js';
 import { createDocumentRoutes } from './documents.routes.js';
 import { createUrlRoutes } from './urls.routes.js';
 import { createAgentRoutes } from './agents.routes.js';
+import { createVideoRoutes } from './videos.routes.js';
 import { createAdminRoutes } from './admin.routes.js';
 import { forbidden } from '../utils/errors.js';
 import { wrap } from './_helpers.js';
@@ -55,6 +56,7 @@ export function createApiRouter(runtime) {
   api.use('/documents', requireAuth, createDocumentRoutes(runtime));
   api.use('/urls', requireAuth, createUrlRoutes(runtime));
   api.use('/agents', createAgentRoutes(runtime));
+  api.use('/videos', requireAuth, createVideoRoutes(runtime));
   api.use('/admin', requireAuth, createAdminRoutes(runtime));
 
   api.get(

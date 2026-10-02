@@ -18,6 +18,7 @@ import { createSettingsService } from './services/settings.service.js';
 import { createFileService } from './services/files.service.js';
 import { createUrlService } from './services/url.service.js';
 import { createAgentService } from './services/agents.service.js';
+import { createVideoService } from './services/video.service.js';
 import { createDashboardService } from './services/dashboard.service.js';
 import * as sessionsRepo from './repositories/sessions.repo.js';
 
@@ -35,6 +36,7 @@ export function createRuntime({ config = null, runMigrations = true } = {}) {
   const files = createFileService({ db, config: cfg, audit });
   const urls = createUrlService({ db, config: cfg, audit });
   const agents = createAgentService({ db, audit });
+  const videos = createVideoService({ db, config: cfg, audit, files, agents, settings });
   const dashboard = createDashboardService({ db, audit });
 
   const runtime = {
@@ -48,6 +50,7 @@ export function createRuntime({ config = null, runMigrations = true } = {}) {
     files,
     urls,
     agents,
+    videos,
     dashboard,
     users: usersRepo,
     touchSession(id) {

@@ -213,6 +213,53 @@ async function main() {
       if (priv.status === 400) ok('bouclage refusé', 'le serveur ne sert pas de proxy interne');
       else bad('bouclage refusé', String(priv.status));
 
+      section('Agent vidéo (phase A)');
+      const vAnon = await req('GET', '/api/videos', { noCookie: true });
+      if (vAnon.status === 401) ok('surface vidéo protégée', '401 sans session — aucune énumération possible');
+      else bad('surface vidéo protégée', String(vAnon.status));
+
+      const vList = await req('GET', '/api/videos?limit=5');
+      if (vList.status === 200 && Array.isArray(vList.body.items)) ok('rapports lisibles', `${vList.body.total} vidéo(s), portée ${vList.body.scope}`);
+      else bad('rapports lisibles', `${vList.status} ${vList.text.slice(0, 90)}`);
+
+      const vStats = await req('GET', '/api/videos/stats');
+      const lim = vStats.body?.limits;
+      if (vStats.status === 200 && Number.isFinite(lim?.maxDurationMs) && Number.isFinite(lim?.maxBytes) && Number.isFinite(lim?.windowBytes)) {
+        ok('posture de l’agent', `vidéo ${vStats.body.enabled ? 'activée' : 'éteinte'}, ${vStats.body.count} activer(s), durée ≤ ${Math.round(lim.maxDurationMs / 1000)} s, ffprobe ${vStats.body.ffprobeConfigured ? 'configuré' : 'indisponible'}`);
+      } else bad('posture de l’agent', `${vStats.status} ${vStats.text.slice(0, 90)}`);
+
+      const vDeclare = await req('POST', '/api/videos', { body: { fileId: 999999 } });
+      if (vDeclare.status === 409 && vDeclare.body?.error?.code === 'VIDEO_FEATURE_DISABLED') ok('commutateur en base', '409 explicite tant que video.enabled est faux');
+      else if (vDeclare.status === 404 || vDeclare.status === 403) ok('commutateur en base', `fonctionnalité activée : ${vDeclare.status} sur un identifiant hors portée`);
+      else bad('commutateur en base', `${vDeclare.status} ${vDeclare.text.slice(0, 90)}`);
+
+      const vUrl = await req('POST', '/api/videos/from-url', { body: { url: `${BASE}/healthz` } });
+      if (vUrl.status === 501 && vUrl.body?.error?.code === 'VIDEO_URL_NOT_IMPLEMENTED') ok('collecte par URL non ouverte', '501 — aucun téléchargement tant que le worker n’existe pas');
+      else bad('collecte par URL non ouverte', `${vUrl.status} ${vUrl.text.slice(0, 90)}`);
+
+      const vUpload = await req('POST', '/api/videos/upload', { body: JSON.stringify({}), headers: { 'content-type': 'application/json' } });
+      if ([400, 409, 415].includes(vUpload.status)) ok('ingestion directe bornée', `statut ${vUpload.status} — aucun octet écrit avant le contrôle de conteneur`);
+      else bad('ingestion directe bornée', String(vUpload.status));
+
+      const vProbe = await req('POST', '/api/videos/999999/probe', { body: {} });
+      if (vProbe.status === 404 && vProbe.body?.error?.code === 'NOT_FOUND') ok('re-sondage borné', '404 sur identifiant inconnu, sans énumération');
+      else if (vProbe.status === 409) ok('re-sondage borné', '409 — la fonctionnalité éteinte précède toute lecture');
+      else bad('re-sondage borné', `${vProbe.status} ${vProbe.text.slice(0, 90)}`);
+
+      const vid = vList.body?.items?.[0]?.id;
+      if (vid && dash.body?.scope === 'admin') {
+        const q = await req('POST', `/api/videos/${vid}/quarantine`, { body: { reason: 'sonde du smoke test' } });
+        const r = await req('POST', `/api/videos/${vid}/release`, { body: {} });
+        const after = await req('GET', `/api/videos/${vid}`);
+        if (q.status === 200 && q.body?.asset?.status === 'quarantined' && r.status === 200 && ['ready', 'pending'].includes(after.body?.asset?.status)) {
+          ok('quarantaine puis levée effectives', `vidéo ${vid} : quarantined → ${after.body.asset.status}, décision prise côté serveur`);
+        } else bad('quarantaine puis levée effectives', `${q.status}/${r.status} état ${after.body?.asset?.status}`);
+      } else {
+        const refused = await req('POST', '/api/videos/999998/release', { body: {} });
+        if ([403, 404].includes(refused.status)) ok('quarantaine sous permission', `statut ${refused.status} — le serveur décide, jamais l’interface`);
+        else bad('quarantaine sous permission', String(refused.status));
+      }
+
       const logout = await req('POST', '/api/auth/logout', { body: {} });
       if (logout.status === 200) ok('déconnexion', 'cookies expirés côté client');
       else bad('déconnexion', String(logout.status));
