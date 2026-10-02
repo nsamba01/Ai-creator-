@@ -1,0 +1,57 @@
+# ---------------------------------------------------------------------------
+# PrinceNsamba AI - Git ignore policy
+# Rule: secrets, local data and build artefacts NEVER reach the repository.
+# ---------------------------------------------------------------------------
+
+# --- Secrets / environment (NEVER commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+*.secret
+secrets/
+**/bootstrap-admin-password
+**/.session-secret
+
+# --- Runtime data (DB, uploads, generated outbox) ---
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+uploads/
+tmp/
+dist/
+dist-client/
+coverage/
+
+# --- Node / build ---
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnpm-store/
+*.tsbuildinfo
+.cache/
+.vite/
+
+# --- Editors / OS ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# --- Logs ---
+logs/
+*.log
+
+# --- Docker local overrides (may contain host paths / secrets) ---
+docker-compose.override.yml
+docker-compose.override.yaml

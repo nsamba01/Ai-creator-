@@ -1,0 +1,161 @@
+# ---------------------------------------------------------------------------
+# PrinceNsamba AI — exécution locale et déploiement conteneurisé
+#
+#   cp .env.example .env          # optionnel : sans .env, des secrets sont
+#                                 # générés dans le volume au premier démarrage
+#   docker compose up -d --build   # API + interface sur http://127.0.0.1:3000
+#   docker compose --profile test run --rm test   # lint + suite de tests + audit
+#
+# La composition est délibérément « durcie par défaut » : fichier système en
+# lecture seule, capacités Linux retirées, pas d’élévation de privilèges,
+# utilisateur non root, sonde de vie. Les variables sont lues depuis le `.env`
+# du projet (interpolation Compose) — aucun secret n’est stocké dans ce fichier.
+# ---------------------------------------------------------------------------
+name: princesamba-ai
+
+x-runtime-defaults: &runtime-defaults
+  # Ancre partagée par les services qui exécutent l’application.
+  init: false
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: 3
+
+services:
+  # Le volume nommé est créé par root ; cette étape une fois terminée rend le
+  # répertoire de données à l’utilisateur du conteneur (uid 10001). Sans elle,
+  # `docker compose up` échouerait au premier démarrage sur un volume neuf.
+  volume-init:
+    image: node:22-bookworm-slim
+    user: root
+    volumes:
+      - princesamba_data:/app/data
+    command:
+      - sh
+      - -c
+      - chown -R 10001:10001 /app/data && chmod 700 /app/data && echo "volume prêt"
+    restart: "no"
+    <<: *runtime-defaults
+    read_only: false # doit écrire les droits du volume
+    # chown(2)/chmod(2) demandent CAP_CHOWN et CAP_FOWNER : sans ces deux
+    # capacités, un root « cap_drop: ALL » ne peut pas réattribuer le volume.
+    # Elles sont ajoutées uniquement pour ce service one-shot.
+    cap_add: [CHOWN, FOWNER]
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: princesamba-ai:local
+    restart: unless-stopped
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+    ports:
+      # Publication bornée à la boucle locale par défaut : le HTTPS bout en bout
+      # se fait derrière un reverse proxy (voir docs/DEPLOYMENT.md § 3).
+      # APP_BIND=0.0.0.0 n'est à utiliser qu'en réseau de confiance maîtrisé.
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    volumes:
+      - princesamba_data:/app/data
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+      DATA_DIR: /app/data
+      # Secrets : laissés vides => générés et persistés dans le volume par
+      # l’entrypoint (0600). En production réelle, fournissez-les ici ou via un
+      # gestionnaire de secrets, puis faites tourner la rotation.
+      SESSION_SECRET: "${SESSION_SECRET:-}"
+      STATE_SECRET: "${STATE_SECRET:-}"
+      # Cookies et transport
+      COOKIE_SECURE: "${COOKIE_SECURE:-1}"
+      COOKIE_SAMESITE: "${COOKIE_SAMESITE:-strict}"
+      COOKIE_PREFIX: "${COOKIE_PREFIX:-}"
+      CSRF_PROTECTION: "${CSRF_PROTECTION:-1}"
+      SECURE_PROXY: "${SECURE_PROXY:-0}"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:3000,http://localhost:3000}"
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-}"
+      # Politique de mots de passe et de verrouillage
+      PASSWORD_MIN_LENGTH: "${PASSWORD_MIN_LENGTH:-12}"
+      LOGIN_MAX_ATTEMPTS: "${LOGIN_MAX_ATTEMPTS:-5}"
+      SESSION_TTL_MINUTES: "${SESSION_TTL_MINUTES:-60}"
+      # Débit et limites
+      API_RATE_LIMIT_PER_MIN: "${API_RATE_LIMIT_PER_MIN:-300}"
+      AUTH_RATE_LIMIT_PER_MIN: "${AUTH_RATE_LIMIT_PER_MIN:-30}"
+      URL_RATE_LIMIT_PER_MIN: "${URL_RATE_LIMIT_PER_MIN:-20}"
+      MAX_UPLOAD_MB: "${MAX_UPLOAD_MB:-10}"
+      MAX_QUOTA_MB: "${MAX_QUOTA_MB:-500}"
+      FILE_SCAN_ENFORCE_MAGIC: "${FILE_SCAN_ENFORCE_MAGIC:-1}"
+      # Sorties réseau de l’agent : laisser fermé
+      URL_ALLOW_PRIVATE_HOSTS: "${URL_ALLOW_PRIVATE_HOSTS:-0}"
+      URL_ALLOWED_PORTS: "${URL_ALLOWED_PORTS:-80,443,8080,8443}"
+      # Premier administrateur (jamais de mot de passe dans ce fichier)
+      BOOTSTRAP_ADMIN: "${BOOTSTRAP_ADMIN:-0}"
+      BOOTSTRAP_ADMIN_EMAIL: "${BOOTSTRAP_ADMIN_EMAIL:-}"
+      BOOTSTRAP_ADMIN_PASSWORD: "${BOOTSTRAP_ADMIN_PASSWORD:-}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      LOG_JSON: "${LOG_JSON:-1}"
+    <<: *runtime-defaults
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const p=process.env.PORT||3000;fetch('http://127.0.0.1:'+p+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Smoke test contre l’instance qui vient de démarrer :
+  #   docker compose --profile smoke run --rm smoke
+  smoke:
+    # même image que `app` ; le bloc build permet `--profile smoke run` seul,
+    # sans dépendre d’un `up --build` préalable.
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: princesamba-ai:local
+    entrypoint: ["node", "scripts/smoke-test.js", "--base", "http://app:3000"]
+    depends_on:
+      app:
+        condition: service_healthy
+    # Lecture seule du volume de données : permet de lire le mot de passe
+    # temporaire écrit par le bootstrap sans le taper dans un shell.
+    volumes:
+      - princesamba_data:/app/data:ro
+    environment:
+      SMOKE_EMAIL: "${SMOKE_EMAIL:-}"
+      SMOKE_PASSWORD: "${SMOKE_PASSWORD:-}"
+      SMOKE_PASSWORD_FILE: "${SMOKE_PASSWORD_FILE:-/app/data/bootstrap-admin-password}"
+      SMOKE_NEW_PASSWORD: "${SMOKE_NEW_PASSWORD:-}"
+    <<: *runtime-defaults
+    profiles: ["smoke"]
+
+  # Chaîne de qualité complète, hors ligne : lint statique, 197 tests, audit.
+  #   docker compose --profile test run --rm test
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    <<: *runtime-defaults
+    read_only: false # npm peut écrire un cache temporaire pendant la préparation
+    environment:
+      NODE_ENV: test
+      DATA_DIR: /tmp/ps-data
+    profiles: ["test"]
+
+volumes:
+  princesamba_data:
+    name: princesamba_data
