@@ -116,6 +116,49 @@ services:
       retries: 5
       start_period: 20s
 
+  # Worker de l’agent vidéo : un processus séparé, volontairement le plus fermé du
+  # fichier. Il ne sert aucune interface, n’a aucun accès réseau, et ne voit que le
+  # volume de données. C'est la matérialisation de la contrainte « aucun média traité
+  # dans le processus web » (docs/VIDEO-AGENT.md).
+  #   docker compose up -d worker      (ou: docker compose run --rm worker npm run worker:once)
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: princesamba-ai:local
+    command: ["node", "scripts/video-worker.js"]
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - princesamba_data:/app/data
+    environment:
+      NODE_ENV: production
+      DATA_DIR: /app/data
+      # Le worker partage la base et la clé d’anonymisation des journaux avec `app`.
+      SESSION_SECRET: "${SESSION_SECRET:-}"
+      STATE_SECRET: "${STATE_SECRET:-}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      LOG_JSON: "${LOG_JSON:-1}"
+      VIDEO_WORKER_KINDS: "${VIDEO_WORKER_KINDS:-probe}"
+      VIDEO_WORKER_POLL_MS: "${VIDEO_WORKER_POLL_MS:-1000}"
+      VIDEO_MAX_UPLOAD_MB: "${VIDEO_MAX_UPLOAD_MB:-64}"
+      VIDEO_MAX_DURATION_S: "${VIDEO_MAX_DURATION_S:-3600}"
+      VIDEO_PROBE_WINDOW_KIB: "${VIDEO_PROBE_WINDOW_KIB:-512}"
+      VIDEO_PROBE_TIMEOUT_MS: "${VIDEO_PROBE_TIMEOUT_MS:-10000}"
+      VIDEO_USE_FFPROBE: "${VIDEO_USE_FFPROBE:-1}"
+      FFPROBE_PATH: "${FFPROBE_PATH:-ffprobe}"
+    <<: *runtime-defaults
+    # Aucun réseau : un sondage local ne doit rien pouvoir contacter. Si `ffmpeg` est
+    # ajouté plus tard (phase C), le montage en lecture seule du répertoire d’entrée et
+    # un tmpfs `noexec` s’ajoutent ici — pas au service `app`.
+    network_mode: "none"
+    pids: 128
+    mem_limit: 512m
+    cpus: "1.0"
+
   # Smoke test contre l’instance qui vient de démarrer :
   #   docker compose --profile smoke run --rm smoke
   smoke:
@@ -142,7 +185,7 @@ services:
     <<: *runtime-defaults
     profiles: ["smoke"]
 
-  # Chaîne de qualité complète, hors ligne : lint statique, 197 tests, audit.
+  # Chaîne de qualité complète, hors ligne : lint statique, suite de tests, audit.
   #   docker compose --profile test run --rm test
   test:
     build:

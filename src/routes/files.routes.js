@@ -79,7 +79,9 @@ export function createFileRoutes(runtime) {
     const dto = files.getById(Number(req.params.id));
     if (!dto) throw notFound('Fichier introuvable.');
     assertReadable(req, dto, rbac);
-    res.json({ file: dto });
+    // Les produits dérivés (vignette, piste audio) suivent la portée de la source : celui qui lit le
+    // parent lit ses artefacts, et seulement les leurs — la liste n'est jamais ouverte par identifiant.
+    res.json({ file: dto, children: files.childrenOf(dto.id) });
   }));
 
   router.get('/:id/content', requireAuth, wrap(async (req, res) => {

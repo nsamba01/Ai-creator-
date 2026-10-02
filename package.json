@@ -11,6 +11,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "worker": "node scripts/video-worker.js",
+    "worker:once": "node scripts/video-worker.js --once",
     "build": "vite build",
     "db:migrate": "node src/db/migrate.js",
     "admin:bootstrap": "node scripts/bootstrap-admin.js",
@@ -18,12 +20,8 @@
     "test:one": "node --test --test-concurrency=1",
     "smoke": "node scripts/smoke-test.js",
     "audit": "node scripts/security-audit.js",
-    "check": "npm run lint && npm test && npm run audit",
     "lint": "node scripts/lint.js",
-    "compose:up": "docker compose up -d --build",
-    "compose:down": "docker compose down",
-    "compose:logs": "docker compose logs -f app",
-    "compose:test": "docker compose --profile test run --rm test"
+    "check": "npm run lint && npm test && npm run audit"
   },
   "dependencies": {
     "@noble/hashes": "^1.7.1",

@@ -216,9 +216,19 @@ export function createFileService({ db, config, audit }) {
     };
   }
 
-  function store({ owner, originalName, mimeType, buffer, maxBytes }) {
+  function store({ owner, originalName, mimeType, buffer, maxBytes, parentFileId = null }) {
     ensureDirs();
     const info = inspect({ originalName, mimeType, buffer, maxBytes });
+    // Un artefact (vignette, piste audio, rapport) doit rester rattaché à sa source : même
+    // propriétaire, même quota, et la suppression de la source emporte ses enfants. Sans ce
+    // lien, chaque sortie d’agent inventerait son propre contrôle d’accès — le chemin le plus
+    // sûr vers une fuite.
+    let parent = null;
+    if (parentFileId != null) {
+      parent = db.get(`SELECT id, owner_id FROM files WHERE id = ? AND deleted_at IS NULL`, [Number(parentFileId)]);
+      if (!parent) throw notFound('Fichier parent introuvable.');
+      if (parent.owner_id !== owner.id && !rbacCan(owner, 'files:read:any')) throw forbidden('Fichier parent d’un autre utilisateur.');
+    }
 
     const quotaBytes = config.uploads.quotaBytes ?? 500 * 1024 * 1024;
     if (userQuotaUsed(owner.id) + info.size > quotaBytes) {
@@ -255,8 +265,8 @@ export function createFileService({ db, config, audit }) {
     fs.writeFileSync(abs, info.buffer, { mode: 0o600, flag: 'wx' });
 
     const res = db.run(
-      `INSERT INTO files (owner_id, original_name, stored_name, relative_path, mime_type, extension, size_bytes, sha256, kind, magic_ok, scan_status, scan_notes)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO files (owner_id, original_name, stored_name, relative_path, mime_type, extension, size_bytes, sha256, kind, magic_ok, scan_status, scan_notes, parent_file_id)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         owner.id,
         info.displayName,
@@ -270,6 +280,7 @@ export function createFileService({ db, config, audit }) {
         info.magicOk ? 1 : 0,
         'checked',
         info.notes.length ? JSON.stringify(info.notes).slice(0, 500) : null,
+        parent?.id ?? null,
       ],
     );
     const row = db.get(`SELECT * FROM files WHERE id = ?`, [res.lastInsertRowid]);
@@ -320,6 +331,15 @@ export function createFileService({ db, config, audit }) {
     return { row, abs };
   }
 
+  /** Les artefacts produits à partir d'un fichier (vignettes, extraits), dans l'ordre d'apparition. */
+  function childrenOf(fileId) {
+    // Même forme que n'importe quel autre fichier : un client ne doit pas deviner la structure de
+    // la table à travers un bordereau d'artefacts.
+    return db
+      .all(`SELECT * FROM files WHERE parent_file_id = ? AND deleted_at IS NULL ORDER BY id`, [Number(fileId)])
+      .map(rowToDto);
+  }
+
   function remove(id, actor) {
     const row = db.get(`SELECT * FROM files WHERE id = ? AND deleted_at IS NULL`, [id]);
     if (!row) throw notFound('Fichier introuvable.');
@@ -334,6 +354,18 @@ export function createFileService({ db, config, audit }) {
     } catch (err) {
       logger.warn('suppression physique impossible', { id, error: err.message });
     }
+    // Les artefacts produits à partir de ce fichier suivent leur source, octets compris :
+    // une vignette ou une piste audio survivante serait une fuite partialle du média supprimé.
+    const children = db.all(`SELECT id, relative_path FROM files WHERE parent_file_id = ? AND deleted_at IS NULL`, [id]);
+    for (const child of children) {
+      db.run(`UPDATE files SET deleted_at = ? WHERE id = ?`, [when, child.id]);
+      try {
+        const cabs = resolveStored(child.relative_path);
+        if (fs.existsSync(cabs)) fs.unlinkSync(cabs);
+      } catch (err) {
+        logger.warn('suppression physique d’un artefact impossible', { id: child.id, error: err.message });
+      }
+    }
     audit?.record({
       actor,
       action: audit.AUDIT.FILE_DELETED,
@@ -341,7 +373,7 @@ export function createFileService({ db, config, audit }) {
       targetType: 'file',
       targetId: id,
       severity: 'notice',
-      detail: { name: row.original_name },
+      detail: { name: row.original_name, artefacts: children.length },
     });
     return { ok: true, id };
   }
@@ -368,13 +400,14 @@ export function createFileService({ db, config, audit }) {
     return { count: totals.c, bytes: totals.bytes, downloads: totals.downloads, byKind, rejected };
   }
 
-  return { store, list, getById, readAbsolute, remove, inspect, stats, statsForUser, resolveStored, sanitizeDisplayName, userQuotaUsed };
+  return { store, list, getById, readAbsolute, remove, inspect, stats, statsForUser, resolveStored, sanitizeDisplayName, userQuotaUsed, childrenOf };
 }
 
 export function rowToDto(row) {
   return {
     id: row.id,
     ownerId: row.owner_id,
+    parentId: row.parent_file_id ?? null,
     originalName: row.original_name,
     mimeType: row.mime_type,
     extension: row.extension,

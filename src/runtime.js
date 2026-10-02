@@ -19,6 +19,8 @@ import { createFileService } from './services/files.service.js';
 import { createUrlService } from './services/url.service.js';
 import { createAgentService } from './services/agents.service.js';
 import { createVideoService } from './services/video.service.js';
+import { createVideoJobService } from './services/video-jobs.service.js';
+import { createVideoStream } from './services/video-stream.js';
 import { createDashboardService } from './services/dashboard.service.js';
 import * as sessionsRepo from './repositories/sessions.repo.js';
 
@@ -37,6 +39,11 @@ export function createRuntime({ config = null, runMigrations = true } = {}) {
   const urls = createUrlService({ db, config: cfg, audit });
   const agents = createAgentService({ db, audit });
   const videos = createVideoService({ db, config: cfg, audit, files, agents, settings });
+  const videoJobs = createVideoJobService({ db, config: cfg, settings, audit, videos });
+  const videoStream = createVideoStream({ db, files, videos, settings });
+  // Le service de jobs dépend des vidéos, et la déclaration a besoin des jobs : liaison
+  // différée, explicite, plutôt qu'un import circulaire résolu à la chance.
+  videos.attachJobs(videoJobs);
   const dashboard = createDashboardService({ db, audit });
 
   const runtime = {
@@ -51,6 +58,8 @@ export function createRuntime({ config = null, runMigrations = true } = {}) {
     urls,
     agents,
     videos,
+    videoJobs,
+    videoStream,
     dashboard,
     users: usersRepo,
     touchSession(id) {

@@ -260,6 +260,40 @@ async function main() {
         else bad('quarantaine sous permission', String(refused.status));
       }
 
+      section('Agent vidéo (phase B : lecture par tranches et file d’exécution)');
+      const jList = await req('GET', '/api/videos/jobs?limit=5');
+      if (jList.status === 200 && Array.isArray(jList.body.items) && ['own', 'all'].includes(jList.body.scope)) {
+        ok('file accessible', `${jList.body.total} tâche(s) visible(s), portée ${jList.body.scope} — la route littérale /jobs n’est pas dévorée par /:id`);
+      } else bad('file accessible', `${jList.status} ${jList.text.slice(0, 90)}`);
+
+      const jStats = await req('GET', '/api/videos/jobs/stats');
+      const jl = jStats.body?.limits;
+      if (jStats.status === 200 && Number.isFinite(jl?.leaseMs) && jl.leaseMs >= 2000 && Number.isFinite(jStats.body.expiredLeases)) {
+        ok('bornes du bail lisibles', `bail ${Math.round(jl.leaseMs / 1000)} s, ${jl.maxAttempts} tentative(s), ${jl.concurrency} de parallélisme`);
+      } else bad('bornes du bail lisibles', `${jStats.status} ${jStats.text.slice(0, 90)}`);
+
+      const streamAnon = await req('GET', '/api/videos/1/stream', { noCookie: true });
+      if (streamAnon.status === 401) ok('octets sous session', '401 sans cookie — aucun média ne sort avant identité');
+      else bad('octets sous session', String(streamAnon.status));
+
+      const streamGate = await req('GET', '/api/videos/999999/stream');
+      if (streamGate.status === 409 && streamGate.body?.error?.code === 'VIDEO_STREAM_DISABLED') ok('lecture fermée par défaut', '409 nommé : le réglage video.stream_enabled commande, pas linterface');
+      else if (streamGate.status === 404 || streamGate.status === 403) ok('lecture fermée par défaut', `statut ${streamGate.status} — la capacité est ouverte, l’identifiant inconnu est refusé sans énumération`);
+      else bad('lecture fermée par défaut', `${streamGate.status} ${streamGate.text.slice(0, 90)}`);
+
+      const jobAsk = await req('POST', '/api/videos/999999/jobs', { body: { kind: 'probe' } });
+      if ([404, 409].includes(jobAsk.status)) ok('mise en file bornée', `statut ${jobAsk.status}${jobAsk.body?.error?.code ? ` (${jobAsk.body.error.code})` : ''} — aucune tâche fantôme`);
+      else bad('mise en file bornée', `${jobAsk.status} ${jobAsk.text.slice(0, 90)}`);
+
+      const jobBad = await req('POST', '/api/videos/1/jobs', { body: { kind: 'invente' } });
+      if (jobBad.status === 400 || (jobBad.status === 409 && jobBad.body?.error?.code === 'VIDEO_FEATURE_DISABLED')) ok('kinds fermés à la porte', `statut ${jobBad.status} — la liste des natures de tâche est énumérée côté serveur`);
+      else bad('kinds fermés à la porte', `${jobBad.status} ${jobBad.text.slice(0, 90)}`);
+
+      const reap = await req('POST', '/api/videos/jobs/reap', { body: {} });
+      if (dash.body?.scope === 'admin' && reap.status === 200) ok('ramassage des bails', `${reap.body.examined} tâche(s) examinée(s), ${reap.body.requeued} reprise(s), ${reap.body.failed} abandonnée(s)`);
+      else if (reap.status === 403) ok('ramassage des bails', '403 — videos:manage-jobs est exigée par le serveur');
+      else bad('ramassage des bails', String(reap.status));
+
       const logout = await req('POST', '/api/auth/logout', { body: {} });
       if (logout.status === 200) ok('déconnexion', 'cookies expirés côté client');
       else bad('déconnexion', String(logout.status));

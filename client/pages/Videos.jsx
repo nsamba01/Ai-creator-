@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { api } from '../api.js';
 import { Badge, Button, Card, ErrorNote, InfoNote, Modal, Stat, Table, Toolbar, useLoader } from '../ui.jsx';
+import { useAuth } from '../auth.jsx';
 
 /**
  * Agent Vidéo — phase A.
@@ -12,6 +13,9 @@ import { Badge, Button, Card, ErrorNote, InfoNote, Modal, Stat, Table, Toolbar, 
  * une fonctionnalité.
  */
 const STATUS_TONE = { ready: 'ok', pending: 'neutral', probing: 'neutral', failed: 'danger', quarantined: 'warn' };
+const JOB_TONE = { queued: 'neutral', running: 'neutral', succeeded: 'ok', failed: 'danger', cancelled: 'warn' };
+const JOB_LABEL = { queued: 'en file', running: 'en cours', succeeded: 'terminée', failed: 'échouée', cancelled: 'annulée' };
+const HEAVY_KINDS = ['transcode', 'transcribe', 'thumbnail', 'moderation'];
 const STATUS_LABEL = { ready: 'prête', pending: 'en attente', probing: 'en cours', failed: 'échec', quarantined: 'quarantaine' };
 
 function duration(ms) {
@@ -40,7 +44,9 @@ export default function Videos() {
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState(null);
   const [notice, setNotice] = useState(null);
+  const [jobs, setJobs] = useState(null);
   const inputRef = useRef(null);
+  const { can } = useAuth();
   const stats_ = data?.stats;
 
   const run = async (action) => {
@@ -86,24 +92,51 @@ export default function Videos() {
     });
   };
 
-  const open = (row) =>
+  // La file est lue séparément du rapport : un bordereau indisponible ne doit pas masquer le sondage.
+  const loadJobs = (id) =>
     api
-      .get(`/api/videos/${row.id}`)
-      .then(setDetail)
-      .catch((err) => setLocalError(err));
+      .get(`/api/videos/jobs?videoId=${id}&limit=20`)
+      .then(setJobs)
+      .catch(() => setJobs({ items: [], failed: true }));
+
+  const open = (row) =>
+    run(async () => {
+      setJobs(null);
+      setDetail(await api.get(`/api/videos/${row.id}`));
+      await loadJobs(row.id);
+      return null;
+    });
 
   const act = (id, action) =>
     run(async () => {
       await api.post(`/api/videos/${id}/${action}`, {});
       setDetail(await api.get(`/api/videos/${id}`));
+      await loadJobs(id);
       return action === 'probe' ? 'Sondage relancé.' : action === 'release' ? 'Quarantaine levée.' : 'Vidéo placée en quarantaine.';
+    });
+
+  const enqueue = (id, kind) =>
+    run(async () => {
+      const out = await api.post(`/api/videos/${id}/jobs`, { kind });
+      await loadJobs(id);
+      return `Tâche « ${kind} » en file${out.job?.id ? ` (n° ${out.job.id})` : ''} : un worker la prendra, la requête ne la traite pas.`;
+    });
+
+  const jobAct = (jobId, action, videoId) =>
+    run(async () => {
+      await api.post(`/api/videos/jobs/${jobId}/${action}`, {});
+      await loadJobs(videoId);
+      return action === 'cancel' ? 'Tâche annulée.' : 'Tâche remise en file.';
     });
 
   const asset = detail?.asset;
 
   return (
     <>
-      <Card title="Agent vidéo" subtitle="Phase A : déclaration, sondage des en-têtes de conteneur, quarantaine. Aucun transcodage, aucune lecture en continu.">
+      <Card
+        title="Agent vidéo"
+        subtitle="Déclaration, sondage des en-têtes, quarantaine, lecture par tranches et file d’exécution sous bail. Aucun transcodage, aucune exécution de média."
+      >
         <Toolbar>
           <input ref={inputRef} type="file" accept=".mp4,.m4v,.mov,.mkv,.webm,.avi" onChange={upload} disabled={busy} aria-label="fichier vidéo à téléverser" className="input" />
           <Button loading={busy} onClick={() => inputRef.current?.click()} disabled={!stats_ || !stats_.enabled}>
@@ -157,7 +190,8 @@ export default function Videos() {
         />
         <p className="muted small">
           Un simple renommage (.png → .mp4) est rejeté : la signature du fichier commande, pas son nom. Les valeurs affichées sont déclaratives — elles
-          viennent de l’en-tête du conteneur, pas d’une analyse des images. Lecture en continu, montage, vignettes et sous-titres : phase B.
+          viennent de l’en-tête du conteneur, pas d’une analyse des images. Montage, vignettes et sous-titres restent à venir : la file refuse déjà un
+          kind qu’aucun worker ne sait exécuter.
         </p>
       </Card>
 
@@ -193,6 +227,76 @@ export default function Videos() {
             <span>Déclarée le</span>
             <span>{asset.createdAt}</span>
           </div>
+          {asset.status === 'ready' && stats_?.streaming ? (
+            <div className="video-player">
+              <video controls preload="metadata" src={`/api/videos/${asset.id}/stream`}>
+                Votre navigateur ne lit pas ce conteneur ; la route <code>/api/videos/{asset.id}/stream</code> reste disponible aux lecteurs externes.
+              </video>
+              <p className="muted small">
+                Lecture par tranches (&laquo; Range &raquo;) : déplacez la barre, seul l&apos;octet demandé est débité. La route exige
+                <code> videos:stream</code> et refuse toute vidéo non prête.
+              </p>
+            </div>
+          ) : (
+            <InfoNote tone="warning">
+              {stats_?.streaming
+                ? 'Pas de lecteur : la lecture en continu n’ouvre qu’une vidéo dont le rapport est prêt (sondée, non quarantainée).'
+                : 'Pas de lecteur : la lecture en continu est fermée. Un administrateur doit ouvrir le réglage video.stream_enabled.'}
+            </InfoNote>
+          )}
+          <h3 className="section-title">File d’exécution</h3>
+          {jobs?.failed ? (
+            <p className="muted small">Bordereau de file indisponible — le rapport de sondage ci-dessus reste valable.</p>
+          ) : (
+            <Table
+              caption="Tâches déléguées à cette vidéo"
+              columns={[
+                { key: 'kind', label: 'nature', render: (r) => <code>{r.kind}</code> },
+                { key: 'status', label: 'état', render: (r) => <Badge tone={JOB_TONE[r.status] ?? 'neutral'}>{r.status === 'running' ? `${JOB_LABEL.running} (bail)` : JOB_LABEL[r.status] ?? r.status}</Badge> },
+                { key: 'attempts', label: 'tentatives', className: 'num', render: (r) => `${r.attempts}/${r.maxAttempts}` },
+                { key: 'progress', label: 'avancement', className: 'num', render: (r) => (r.progress == null ? '—' : `${r.progress}%`) },
+                { key: 'runAfter', label: 'prochain réveil', render: (r) => r.runAfter ?? r.leaseExpiresAt ?? '—' },
+                { key: 'errorCode', label: 'erreur', render: (r) => (r.errorCode ? <span title={r.error?.message ?? ''}>{r.errorCode}</span> : '—') },
+                {
+                  key: 'act',
+                  label: '',
+                  render: (r) =>
+                    r.status === 'queued' ? (
+                      <Button variant="ghost" loading={busy} onClick={() => jobAct(r.id, 'cancel', asset.id)}>
+                        Annuler
+                      </Button>
+                    ) : r.status === 'failed' || r.status === 'cancelled' ? (
+                      <Button variant="ghost" loading={busy} onClick={() => jobAct(r.id, 'retry', asset.id)}>
+                        Reprendre
+                      </Button>
+                    ) : null,
+                },
+              ]}
+              rows={jobs?.items ?? []}
+              empty="Aucune tâche en file : le sondage a été fait dans la requête, rien n’a été délégué."
+            />
+          )}
+          <div className="card-actions">
+            <Button variant="secondary" loading={busy} onClick={() => enqueue(asset.id, 'probe')}>
+              Déléguer une analyse
+            </Button>
+            {can('videos:process') ? (
+              HEAVY_KINDS.map((k) => (
+                <Button key={k} variant="ghost" loading={busy} onClick={() => enqueue(asset.id, k)} title={`Déléguer « ${k} » — refusé à l’exécution tant qu’aucun worker ne le prend en charge`}>
+                  {k}
+                </Button>
+              ))
+            ) : (
+              <p className="muted small">
+                Montage, transcription, vignettes et modération sont réservées à <code>videos:process</code> : la file refuse un kind lourd sans cette
+                permission, et un worker qui ne sait pas le produire le marque <code>VIDEO_TOOL_UNAVAILABLE</code> au lieu de le faire réussir pour rien.
+              </p>
+            )}
+          </div>
+          <p className="muted small">
+            Un worker, pas ce navigateur, exécute ces tâches : chaque prise de tâche est bornée par un bail, reprise si le worker meurt, et limitée en
+            tentatives.
+          </p>
           {asset.notes?.length ? (
             <ul className="findings">
               {asset.notes.map((note, i) => (

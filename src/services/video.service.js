@@ -153,6 +153,7 @@ function positive(n) {
 }
 
 export function createVideoService({ db, config, audit, files, agents, settings, ffprobeRunner = null } = {}) {
+  let jobsService = null;
   const repo = createVideoRepository(db);
   const runFfprobe = ffprobeRunner ?? createFfprobeRunner({ timeoutMs: config.video?.probeTimeoutMs ?? 10_000 });
 
@@ -306,9 +307,38 @@ export function createVideoService({ db, config, audit, files, agents, settings,
       taskId: task?.id ?? null,
     });
 
+    // Mode « file » (réglage video.async_probe) : la requête ne sonde pas, elle met en file.
+    // Le sondeur de 512 Kio est rapide, mais un ffprobe de 10 s dans une requête HTTP est
+    // un déni de service offert ; l'administrateur choisit laquelle des deux voies il ouvre.
+    if (jobsService && asyncMode()) {
+      const queued = jobsService.enqueue({ actor, videoId: created.id, kind: 'probe' });
+      audit?.record({ actor, action: 'video.job.queued', category: 'agents', outcome: 'success', targetType: 'video', targetId: created.id, detail: { fileId: stored.id, kind: 'probe', via: 'register' } });
+      return { asset: rowToDto(repo.getById(created.id)), created: true, task: task ?? null, queued: true, job: queued.job };
+    }
+
     const result = probeAndPersist(created, stored, { actor, taskId: task?.id ?? null });
     audit?.record({ actor, action: audit.AUDIT?.VIDEO_REGISTERED ?? 'video.registered', category: 'agents', outcome: 'success', targetType: 'video', targetId: result.asset.id, detail: { fileId: stored.id, taskId: task?.id ?? null } });
-    return { asset: result.asset, created: true, task: task ?? null, analysis: result.analysis };
+    return { asset: result.asset, created: true, task: task ?? null, analysis: result.analysis, queued: false };
+  }
+
+  /** Exécution d'un job de sondage : mêmes écritures que le chemin synchrone, acteur = le propriétaire. */
+  function probeForJob({ videoId }) {
+    const row = repo.getById(Number(videoId));
+    if (!row) throw notFound('Vidéo introuvable.');
+    const fileRow = db.get(`SELECT * FROM files WHERE id = ? AND deleted_at IS NULL`, [row.file_id]);
+    if (!fileRow) throw notFound('Fichier source introuvable.');
+    db.run(`UPDATE video_assets SET status = 'probing', updated_at = ? WHERE id = ?`, [new Date().toISOString(), row.id]);
+    return probeAndPersist(repo.getById(row.id), fileRow, { actor: null, taskId: row.task_id ?? null });
+  }
+
+  /** Late binding de la file : le service de jobs a besoin de celui-ci, on évite l'import circulaire. */
+  function attachJobs(service) {
+    jobsService = service;
+  }
+
+  function asyncMode() {
+    const v = settings?.bool?.('video.async_probe');
+    return v === null || v === undefined ? false : Boolean(v);
   }
 
   function probeAndPersist(assetRow, fileRow, { actor, taskId = null }) {
@@ -445,9 +475,20 @@ export function createVideoService({ db, config, audit, files, agents, settings,
     return row;
   }
 
+  /**
+   * Ligne d'actif **après** contrôle de portée. Un seul chemin pour la lecture du rapport et
+   * pour la lecture des octets : deux portées différentes selon la route seraient une faille
+   * déguisée en détail d'implémentation.
+   */
+  function scopedRow({ id, actor, scopeAll = false }) {
+    const row = repo.getById(Number(id)) ?? null;
+    if (!row) throw notFound('Vidéo introuvable.');
+    if (!scopeAll && row.owner_id !== actor?.id && !holds(actor, 'videos:read:any')) throw forbidden('Vidéo d’un autre utilisateur.');
+    return row;
+  }
+
   function get({ id, actor, scopeAll = false }) {
-    const row = repo.getById(id) ?? scopedFail(id, actor);
-    if (!scopeAll && row.owner_id !== actor.id && !holds(actor, 'videos:read:any')) throw forbidden('Vidéo d’un autre utilisateur.');
+    const row = scopedRow({ id, actor, scopeAll });
     const fileRow = db.get(`SELECT id, original_name, mime_type, extension, size_bytes, deleted_at FROM files WHERE id = ?`, [row.file_id]);
     return { asset: rowToDto(row), file: fileRow ? { id: fileRow.id, name: fileRow.original_name, mime: fileRow.mime_type, extension: fileRow.extension, bytes: fileRow.size_bytes, deleted: Boolean(fileRow.deleted_at) } : null, analyses: repo.latestAnalyses(row.id).map(analysisToDto) };
   }
@@ -473,7 +514,7 @@ export function createVideoService({ db, config, audit, files, agents, settings,
     return repo.softDeleteByFileId(fileId, new Date().toISOString());
   }
 
-  return { repo, register, reprobe, get, list, setQuarantine, stats, limits, enabled, assertEnabled, onFileRemoved, probeFile, VIDEO_EXTENSIONS, VIDEO_ERRORS };
+  return { repo, register, reprobe, get, list, setQuarantine, stats, limits, enabled, assertEnabled, onFileRemoved, probeFile, scopedRow, scopedFail, attachJobs, asyncMode, probeForJob, VIDEO_EXTENSIONS, VIDEO_ERRORS };
 }
 
 function unsupported(code, message) {

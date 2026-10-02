@@ -1,9 +1,11 @@
 # Agent Vidéo — architecture
 
-> **Statut : phase A implémentée et testée ; phases B à D en conception.**
+> **Statut : phases A et B implémentées et testées ; phases C et D en conception.**
 > Ce document décrit d'abord ce qui est réellement dans le code (avec les chemins de
 > fichiers), puis ce qui reste à faire. Toute ligne qui n'est pas écrite est marquée
-> « prévu » ; rien n'est présenté comme fonctionnel sans test correspondant.
+> « prévu » ; rien n'est présenté comme fonctionnel sans test correspondant. Les mesures
+> citées (nombres de tests, de permissions, de réglages, tailles d'octets servies) ont été
+> obtenues en exécutant les commandes dans ce dépôt, pas estimées.
 
 ## Objectif
 
@@ -57,21 +59,27 @@ chemin arbitraire**.
 7. **Interface.** `client/pages/Videos.jsx` (entrée « Agent vidéo », gardée par
    `videos:read`) : compteurs de posture, téléversement, déclaration par identifiant, table
    des rapports, fiche de détail avec pistes et notes, boutons de re-sondage et de
-   quarantaine — chaque action étant re-décidée par le serveur.
+   quarantaine — chaque action étant re-décidée par le serveur. Phase B : la fiche monte un
+   `<video src="/api/videos/:id/stream">` **seulement** si le serveur déclare la capacité ouverte
+   (`stats.streaming`) et le rapport prêt, un bordereau des tâches déléguées à la vidéo (état,
+   tentatives, prochain réveil, erreur nommée) avec annuler/reprendre, et les kinds lourds ne sont
+   proposés qu'au compte qui a `videos:process` — l'affichage suit la permission, mais c'est le
+   serveur qui la vérifie à chaque appel.
 
 ## Ce que la phase A ne fait pas (à ne pas vendre)
 
-* **aucun lecteur, aucun flux** : pas de `GET /api/videos/:id/stream`, pas de `Range`. Une
-  balise `<video>` sur une route non authentifiée serait une fuite ; la lecture en continu
-  authentifiée est la phase B ;
+* le **lecteur et le flux** (`GET /api/videos/:id/stream`, `Range`, 206/416/304) ne sont plus
+  à écrire : voir la section « Phase B » ci-dessous. Ils restent fermés tant que le réglage
+  `video.stream_enabled` est faux, ce qui est l'état par défaut ;
 * **aucun transcodage, aucune vignette, aucune transcription** : ni `ffmpeg`, ni ASR, ni
   modèle chargé ;
 * **aucun collecte par URL** : `POST /api/videos/from-url` répond `501 NOT_IMPLEMENTED` —
   l'agent de collecte refuse délibérément de télécharger un média tant que le bac à sable du
   worker n'existe pas ;
-* **aucun plan d'exécution asynchrone** : le sondage est synchrone, borné à une fenêtre de
-  lecture, et ne crée pas de tâche `agent_tasks` (le champ `task_id` est posé, relié à la
-  phase B).
+* le **plan d'exécution asynchrone** est la table `video_jobs` (phase B), pas `agent_tasks` :
+  les tâches média ont besoin d'un bail, d'un preneur unique et d'un compteur de tentatives,
+  trois choses qu'aucune colonne de `agent_tasks` ne représentait. Le synchrone reste le
+  comportement par défaut (`video.async_probe = false`) ; l'administrateur choisit la voie.
 
 ## Modèle de données (migration `004_video_agent.sql`, appliquée)
 
@@ -95,12 +103,24 @@ Index réels : `idx_video_assets_owner (owner_id, deleted_at)`,
 `idx_video_analyses_video (video_id, kind)` (plus la contrainte `UNIQUE`),
 `idx_agent_tasks_role_status (agent_role, status, id)` pour le ramassage de file.
 
-## Permissions (28ᵉ à 31ᵉ de la liste — total 31)
+Phase B (migration `005_video_jobs.sql`) : la table `video_jobs` décrite plus haut, avec son
+déclencheur `touch_video_jobs_updated_at` et `idx_video_jobs_claim (status, run_after, priority, id)`
+— l'index exactement demandé par le prélèvement ; et `files.parent_file_id INTEGER REFERENCES
+files(id) ON DELETE CASCADE` + `idx_files_parent`, nullable, qui rattache un artefact (vignette,
+piste audio, rapport) à son média source. Un artefact hérite du propriétaire de la source au
+moment du dépôt (`files.store` refuse de le faire changer de main, y compris pour un administrateur),
+compte dans le même quota, et **disparaît avec elle** : `files.service.remove()` soft-supprime les
+enfants et retire leurs octets, sinon une vignette survivrait à la vidéo qu'elle représente.
 
-`videos:upload`, `videos:read`, `videos:read:any`, `videos:process` (catégorie `agents`, `is_dangerous = 0`). `ADMIN` reçoit les
+## Permissions (28ᵉ à 33ᵉ de la liste — total 33, compté dans `data/app.db`)
+
+`videos:upload`, `videos:read`, `videos:read:any`, `videos:process` (catégorie `agents`, `is_dangerous = 0`),
+puis phase B : `videos:stream` (ADMIN **et** USER — c'est le droit de lire ses propres octets) et
+`videos:manage-jobs` (ADMIN seul — ramasser les bails, purger la file). `ADMIN` reçoit les
 quatre ; `USER` reçoit `videos:upload` et `videos:read` **sans** `videos:read:any`
-(portée sur ses propres lignes, comme pour les fichiers) ni `videos:process`. La file de
-tâches reste pilotée par `agents:manage`.
+(portée sur ses propres lignes, comme pour les fichiers) ni `videos:process`, ni
+`videos:manage-jobs`. Un compte standard peut donc mettre en file et suivre **ses** tâches, pas
+décider du sort de celles d'autrui.
 
 ## API exposée
 
@@ -114,13 +134,94 @@ GET  /api/videos/:id             asset + fichier + analyses        → { asset, 
 POST /api/videos/:id/probe       re-sondage                          → { asset, analyses }   videos:upload (portée) ou videos:process
 POST /api/videos/:id/quarantine  mise en quarantaine { reason }      → { asset }   videos:process
 POST /api/videos/:id/release     levée de quarantaine                → { asset }   videos:process
+
+GET|HEAD /api/videos/:id/stream  lecture par tranches (Range)         → 200/206/304/416   videos:stream + vidéo prête
+POST /api/videos/:id/jobs        mettre une tâche en file             → 202 { job, limits }   probe : videos:upload ; kinds lourds : videos:process
+GET  /api/videos/jobs            file portée (?status&videoId&limit)  → { items, total, scope }   videos:read
+GET  /api/videos/jobs/stats      compteurs + bornes du bail           → { queued, running, expiredLeases, limits }   videos:read
+GET  /api/videos/jobs/:id        détail d'une tâche                   → { job }   portée propriétaire
+POST /api/videos/jobs/:id/cancel annuler                               → { job }   propriétaire ou videos:manage-jobs
+POST /api/videos/jobs/:id/retry  remettre en file (tentatives à zéro)  → { job }   idem
+POST /api/videos/jobs/reap       ramasser les bails expirés, purge optionnelle { purgeBefore } → videos:manage-jobs
 ```
+
+L'ordre de déclaration de ces routes est une contrainte, pas un détail : `/jobs`, `/jobs/stats`
+et `/jobs/:id` doivent précéder `/:id`, sans quoi `Number('jobs')` ferait un `NaN` et la file
+deviendrait injoignable. `tests/video-stream.test.js` le vérifie en appelant réellement
+`GET /api/videos/jobs`.
+
+`GET /api/videos/stats` renvoie en plus `streaming` (état réel de `video.stream_enabled`) et
+`jobs` (compteurs de file + bornes effectives), pour que l'interface affiche la capacité
+disponible et non une intention.
+
+### Sémantique de la lecture (`src/services/video-stream.js`)
+
+Les gardes sont dans cet ordre, et le premier qui refuse décide :
+
+1. `video.stream_enabled` vrai — sinon `409 VIDEO_STREAM_DISABLED` (la réponse nomme le réglage à ouvrir) ;
+2. `videos.assertEnabled()` — la fonctionnalité vidéo éteinte refuse tout ;
+3. `status === 'ready'` — sinon `409 VIDEO_NOT_READY` (quarantaine, échec de sondage ou sondage
+   simplement pas encore fait : un job en file ne vaut pas un média vérifié) ;
+4. `files.kind === 'video'` **et** `magic_ok = 1` — sinon `403 VIDEO_UNSAFE_SOURCE` ;
+5. `statSync` égal à `files.size_bytes` — sinon `409 VIDEO_SIZE_MISMATCH` : un fichier modifié hors
+   de l'application n'est plus celui qui a été analysé ;
+6. `isFile()` seul compte (pas de lien, pas de périphérique, pas de fifo) ;
+7. portée : `videos.scopedRow()` — **la même fonction** que celle qui sert le rapport JSON, donc
+   ce que l'on rapporte et ce que l'on débite ne peuvent pas diverger de droit d'accès.
+
+Le type média annoncé vient du conteneur **sondé** (`mp4`, `mov`, `webm`, `mkv`, `avi`, `ogv`),
+jamais de l'en-tête `Content-Type` de l'envoi. Une seule plage est honorée ; une plage invraisemblable
+(`bytes=1-0`, début hors fichier, queue vide) vaut `416` avec `Content-Range: bytes */taille` ; une
+demande multi-plages est traitée comme une absence de plage (réponse complète, conforme à RFC 7233
+qui l'autorise) plutôt que comme un `206` trompeur. L'`ETag` est `W/"<16 premiers hex de
+sha256>-<taille>"`, et `If-None-Match` répond `304` sans corps. En-têtes de réponse :
+`Accept-Ranges`, `Content-Range`, `Content-Length` de la tranche, `Vary: Cookie, Range`,
+`X-Content-Type-Options: nosniff`, `Cross-Origin-Resource-Policy: same-origin`,
+`Content-Security-Policy: default-src 'none'`, `Content-Disposition: inline; filename="…"`.
+Ce dernier nom est assaini caractère par caractère (aucun CR, LF, guillemet, contre-oblique,
+ni octet de contrôle) et tronqué à 120 : un nom de fichier téléversé ne peut pas injecter
+d'en-tête.
+
+Le corps est écrit par `fs.createReadStream(abs, { start, end })` — jamais `readFile` entier — et
+`req.on('aborted'|'close')` détruit le flux : un lecteur qui cherche une position ne laisse pas un
+descripteur ouvert.
+
+### File d'exécution
+
+`video_jobs` (migration `005_video_jobs.sql`) porte le bail, pas `agent_tasks` :
+
+| Colonne | Rôle |
+|---|---|
+| `video_id`, `file_id`, `owner_id` | la cible et le porteur du droit ; `UNIQUE(video_id, kind)` rend la mise en file **idempotente** (redemander un `probe` requalifie la ligne au lieu d'empiler) |
+| `kind` | `probe`, `transcode`, `transcribe`, `thumbnail`, `moderation` — liste fermée, vérifiée en base par `CHECK` |
+| `status` | `queued`, `running`, `succeeded`, `failed`, `cancelled` |
+| `locked_by`, `locked_at`, `lease_expires_at` | preneur unique : le `claim` est un `UPDATE ... WHERE id = ? AND status = 'queued'` dans une transaction, deux workers ne gagnent pas tous les deux |
+| `attempts`, `max_attempts`, `run_after` | Rechutes bornées : `attempts` est incrémenté à la prise, l'échec repousse `run_after` d'un backoff doublant à chaque tentative ; à `max_attempts` la tâche passe `failed` |
+| `priority` | 0 à 9 (`CHECK`), prélèvement `ORDER BY priority DESC, id ASC` |
+| `input_json`, `result_json` | bornés (30 000 octets) par la même politique que les rapports d'analyse |
+| `error_code`, `error_message` | le message est nettoyé : chemins absolus, `file://` et lecteurs Windows sont remplacés, puis `redact` passe — un `EIO` sur `/home/…/data/uploads/x.mp4` ne doit pas apprendre à un client où est le stockage |
+
+Un bail expiré est **repris** (`reapExpired`, lot de 500 maximum par tour, pour qu'une panne
+prolongée ne transforme pas un tick en balayage de dizaines de milliers de lignes) ; un worker
+qui revient après son bail obtient `{ lost: true }` et son résultat n'est **pas** écrit.
+`kinds` borne le prélèvement : un worker configuré `VIDEO_WORKER_KINDS=probe` ne saisit pas une
+`thumbnail`, il la laisse à un worker capable. Un kind sans exécuteur n'est pas un succès vide :
+`VIDEO_TOOL_UNAVAILABLE`, relance repoussée, échec nommé.
+
+`npm run worker` (ou `worker:once` pour un tour) lance `scripts/video-worker.js` ; le service
+`worker` de `docker-compose.yml` le fait tourner avec `network_mode: "none"`, `pids-limit: 128`,
+`mem_limit: 512m`, `cpus: "1.0"`, et aucun accès réseau — le processus qui touche aux octets du
+média est séparé de celui qui sert l'interface.
 
 Codes d'erreur (forme `AppError`, jamais de sortie brute) : `VIDEO_FEATURE_DISABLED` (409, fonctionnalité
 éteinte), `VIDEO_NOT_A_VIDEO` (400, le fichier n’est pas de type `video`),
 `VIDEO_UNSUPPORTED_CONTAINER` (415), `VIDEO_HEADER_INCOMPLETE` (422),
 `VIDEO_DURATION_EXCEEDED` (422, mis en quarantaine), `VIDEO_DIMENSIONS_INVALID` (422),
-`VIDEO_PROBE_FAILED` (422), `VIDEO_QUARANTINED` (409), `VIDEO_URL_NOT_IMPLEMENTED` (501),
+`VIDEO_PROBE_FAILED` (422), `VIDEO_QUARANTINED` (409), `VIDEO_URL_NOT_IMPLEMENTED` (501) ;
+phase B : `VIDEO_STREAM_DISABLED` (409), `VIDEO_NOT_READY` (409), `VIDEO_SIZE_MISMATCH` (409),
+`VIDEO_UNSAFE_SOURCE` (403), `VIDEO_STREAM_FAILED` (500, erreur d'entrée-sortie en cours de
+débit), et côté file `VIDEO_JOB_NOT_ALLOWED`, `VIDEO_JOB_BUSY`, `VIDEO_TOOL_UNAVAILABLE` (503),
+`VIDEO_LEASE_LOST`, `VIDEO_LEASE_EXPIRED`, `VIDEO_CANCELLED`, `VIDEO_JOB_FAILED`.
 plus les codes hérités du pipeline de fichiers et de l’authentification : `PAYLOAD_TOO_LARGE`
 (413 — c’est lui qui fait foi pour la taille, la limite appliquée aux vidéos étant le
 `min(MAX_UPLOAD_MB, VIDEO_MAX_UPLOAD_MB)` calculé au démarrage), `UNSUPPORTED_MEDIA_TYPE`
@@ -143,13 +244,24 @@ signalé au démarrage par `config.video.warning`. C'est ce minimum qui est anno
 stocké 10 Mo en mémoire pour les jeter juste après. Le formulaire n'accepte qu'un champ
 fichier (`fields: 1`).
 
+Variables ajoutées par la phase B : `VIDEO_WORKER_KINDS=probe` (liste fermée — tout kind
+inconnu est écarté au chargement, pas reporté au worker), `VIDEO_WORKER_POLL_MS=1000`,
+`VIDEO_WORKER_IN_PROCESS=0` (cadence et périmètre du worker ; le mode « dans le processus web »
+n'existe pas, et ce réglage ne le permet pas).
+
 Réglages en base (page Configuration, validés par `settings.service`) : `video.enabled`
 (booléen, `false` par défaut), `video.max_duration_seconds` (entier 1–86400, `3600`),
-`video.use_ffprobe` (booléen, `true`).
+`video.use_ffprobe` (booléen, `true`) ; phase B : `video.stream_enabled` (`false`),
+`video.async_probe` (`false`), `video.lease_seconds` (5–3600, `120`), `video.max_attempts`
+(1–10, `3`), `video.backoff_seconds` (0–3600, `2`), `video.worker_concurrency` (1–8, `1`).
+**19 réglages au total**, comptés dans `data/app.db`. Ce sont eux qui ouvrent ou ferment les
+modes — pas une variable d'environnement de plus : un administrateur doit pouvoir refermer la
+lecture en continu sans redéployer, et le worker lit sa cadence dans l'environnement parce que
+c'est une propriété du processus, pas une décision métier.
 
 ## Critères d'acceptation prouvés par les tests
 
-`tests/videos.test.js` — 23 sous-tests, tous verts, exécutés par `npm run check` :
+`tests/videos.test.js` — 28 sous-tests, tous verts, exécutés par `npm run check` :
 
 1. refus de toute déclaration tant que `video.enabled` est faux, puis acceptation après
    activation par `PUT /api/admin/settings` ;
@@ -186,6 +298,29 @@ Réglages en base (page Configuration, validés par `settings.service`) : `video
     en base, avec `truncated: true` ; une chaîne volontairement cassée soumise au dépôt est
     remplacée par un objet honnête, jamais stockée telle quelle.
 
+## Ce que la phase B a produit de mesuré
+
+* `tests/video-stream.test.js` — **23 sous-tests** verts : découpage de plage en unitaire
+  (dont `bytes=1-0`, queue vide, multi-plage), comparaison **octet par octet** contre `fs.readFileSync`
+  pour quatre formes de plage, `416` sans corps, `304`, `HEAD` à zéro octet, les sept gardes de la
+  route, le `VIDEO_SIZE_MISMATCH` provoqué en tronquant réellement le fichier, claim exclusif,
+  isolement par kinds, bail expiré repris, écriture interdite au worker décroché, backoff mesuré sur
+  `run_after` (et non contourné par un réglage), échec définitif à `max_attempts`, message d'erreur
+  sans chemin, idempotence `UNIQUE(video_id, kind)`, purge journalisée, portée du bordereau de file,
+  artefacts rattachés et emportés par la suppression, bornes `CHECK` de la table, permissions.
+* E2E contre le **serveur en cours d'exécution** et un **processus worker séparé**
+  (`scripts/video-worker.js --once`, lancé par `npm run worker:once`) : **21/21** — dont rapport
+  laissé `pending` par la requête puis rempli par le worker, lecture de 200 434 octets par
+  tranches, refus du kind lourd par un worker qui ne le connaît pas puis refus nommé par celui qui
+  le connaît, et rotation du mot de passe administratif au premier accès.
+* `npm run smoke` sur la même instance : **40 contrôles** dont 7 sur la phase B ; `npm run check` :
+  lint sans reproche, **248 tests** verts, audit de sécurité sur 115 fichiers, 0 constat.
+* `docker compose config` : **ACTION NON EXÉCUTÉE, RAISON : ni `docker` ni `podman` dans cet
+  environnement**. Le service `worker` de `docker-compose.yml` a donc été relu à la main (clés,
+  ancre `image`, `network_mode: none`, limites, `depends_on: app: service_healthy` pour ne pas
+  entrer en concurrence avec les migrations au démarrage), mais sa validation formelle par
+  l'outil reste à faire sur une machine qui l'a.
+
 ## Contraintes structurantes conservées pour les phases B à D
 
 Aucun transcodage dans le processus web. `ffmpeg` est un binaire externe, gourmand et
@@ -196,10 +331,10 @@ répertoire de travail `tmpfs` monté `noexec`, `cap_drop: [ALL]`, `no-new-privi
 environnement vidé (`env -i`), et **aucun argument issu de l'utilisateur dans la ligne de
 commande**. Le re-sondage par `ffprobe` d'une phase à l'autre garde les mêmes bornes.
 
-* **Phase B** — `GET /api/videos/:id/stream` authentifié avec `Range` (206/416), plan d'exé-
-  cution asynchrone sur `agent_tasks` (claim, délai, reprise après incident, idempotence),
-  artefacts rattachés par une colonne `parent_file_id` de `files` (nullable,
-  `ON DELETE CASCADE` — elle n'existe pas aujourd'hui).
+* **Phase B — faite** : flux `Range` authentifié (206/416/304), file d'exécution propre
+  (`video_jobs` : claim sous transaction, bail, backoff, idempotence), artefacts rattachés par
+  `files.parent_file_id`. Le worker est un **autre processus**, sans réseau ; le processus web
+  débite des octets mais ne traite jamais un média.
 * **Phase C** — vignettes (`thumbnail`), extraction audio et transcription locale ; le texte
   produit repasse par la politique de secret (`redactHits`) avant stockage, et l'audio n'est
   pas conservé par défaut.
@@ -211,5 +346,13 @@ commande**. Le re-sondage par `ffprobe` d'une phase à l'autre garde les mêmes 
 
 Le sondage est **déclaratif** : il lit ce que l'en-tête annonce. Un fichier peut mentir dans
 son en-tête sans que la phase A le détecte ; c'est précisément pourquoi un résultat
-incohérent met en quarantaine et n'autorise aucun rendu. La vérification par décodage réel
-reste à la phase B/C, dans le worker.
+incohérent met en quarantaine et n'autorise aucun rendu. La vérification par décodage réel reste à
+la phase C, dans le worker.
+
+Conséquence assumée de la phase B : débiter des octets ne prouve pas que le fichier se décode. La
+route ouvre donc l'octet à un compte authentifié qui a le droit de lire **ce** fichier, sans
+exécuter ni parser le média dans le processus web — le risque résiduel est la consommation de
+bande passante et la lecture d'un fichier malveillant par le **lecteur du navigateur**, pas
+l'exécution côté serveur. Les leviers en place : capacité fermée par défaut, plafond de taille à
+l'entrée, quarantaine réversible par l'administration, `magic_ok` exigé, taille épinglée sur
+`files.size_bytes`, et aucun média traité dans le processus qui sert l'interface.

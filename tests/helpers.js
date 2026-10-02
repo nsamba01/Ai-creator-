@@ -189,6 +189,7 @@ export function makeClient(base) {
     head: (p, o) => request('HEAD', p, o),
     request,
     jar,
+    cookies: () => (jar.size ? [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ') : ''),
     setCookie: (k, v) => jar.set(k, v),
     setCsrf: (v) => {
       csrf = v;

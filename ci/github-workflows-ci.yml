@@ -1,7 +1,7 @@
 name: CI
 
 # Chaîne de qualité du dépôt. Trois emplois :
-#   quality — lint, 197 tests, build de l'interface, smoke contre une instance réelle, audit
+#   quality — lint, 248 tests, build de l'interface, smoke contre une instance réelle, audit
 #   docker  — construction de l'image de production et exécution de la composition
 #   docs    — vérification que la documentation cite des commandes qui existent
 #

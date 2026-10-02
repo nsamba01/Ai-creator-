@@ -5,8 +5,8 @@ d'administration React, contrôle d'accès par rôles et permissions, gestion de
 fichiers et d'agents, conteneurisée et tenue par une chaîne de qualité
 automatisée. Pensée pour tourner sur un seul serveur, sans service externe.
 
-> **État vérifié le 2026-10-02** : `npm run lint` sort 0 problème · **197 tests, 0 échec** ·
-> **27/27** contrôles de smoke test sur une instance de production réellement démarrée ·
+> **État vérifié le 2026-10-02** : `npm run lint` sort 0 problème · **248 tests, 0 échec** ·
+> **40/40** contrôles de smoke test sur une instance de production réellement démarrée ·
 > audit de sécurité sans constat ouvert. Le détail des commandes et des limites est dans
 > [docs/TESTING.md](docs/TESTING.md) et [docs/SECURITY.md](docs/SECURITY.md).
 
@@ -28,7 +28,7 @@ Contrôles disponibles immédiatement :
 
 ```bash
 docker compose --profile smoke run --rm smoke    # 27 vérifications sur l'instance en cours d'exécution
-docker compose --profile test  run --rm test     # lint + 197 tests + audit de sécurité
+docker compose --profile test  run --rm test     # lint + 248 tests + audit de sécurité
 ```
 
 ## Démarrage sans Docker
@@ -80,11 +80,13 @@ de fuite : [docs/SECURITY-POLICY.md](docs/SECURITY-POLICY.md).
 |---|---|
 | `npm start` / `npm run dev` | serveur (avec `--watch` en dev) |
 | `npm run build` | build Vite de l'interface vers `dist/` |
-| `npm test` | 197 tests (`node --test`, une file) |
+| `npm test` | 248 tests (`node --test`, une file) |
 | `npm run lint` | portique statique maison (syntaxe, imports, motifs de secret, cohérence `.env.example`) |
 | `npm run audit` | audit de sécurité (ajoutez `-- --strict` pour un code de sortie utile en CI) |
-| `npm run smoke` | 27 contrôles contre une instance en cours d'exécution (`SMOKE_BASE_URL`, `SMOKE_EMAIL`, `SMOKE_PASSWORD` ou `SMOKE_PASSWORD_FILE`) |
+| `npm run smoke` | 40 contrôles contre une instance en cours d'exécution (`SMOKE_BASE_URL`, `SMOKE_EMAIL`, `SMOKE_PASSWORD` ou `SMOKE_PASSWORD_FILE`) |
 | `npm run check` | `lint` + `test` + `audit` : à passer avant toute fusion |
+| `npm run worker` | worker vidéo : réclame les tâches de `video_jobs`, sonde, écrit le rapport (boucle de service) |
+| `npm run worker:once` | un seul tour du worker, puis sortie (utile en cron, en CI, ou pour ce parcours de bout en bout) |
 | `npm run db:migrate` | migrations seules (idempotentes, empreinte SHA-256) |
 | `npm run admin:bootstrap -- --email a@b.c [--password-file f] [--rotate]` | premier administrateur, ou rotation |
 | `npm run compose:up` / `compose:down` / `compose:logs` / `compose:test` | alias Docker Compose |
@@ -119,7 +121,7 @@ ou l'inverse. Trois points à ne pas manquer :
 ```
 src/{config,db,repositories,services,middleware,routes,utils}   serveur applicatif (7 901 lignes)
 client/                                                          SPA React 18, 13 pages (2 791 lignes)
-tests/                                                           10 fichiers, 197 tests, harnais commun (2 999 lignes)
+tests/                                                           12 fichiers, 248 tests, harnais commun (4 118 lignes)
 scripts/                                                         lint, smoke test, audit de sécurité, bootstrap admin (833 lignes)
 docker/entrypoint.sh                                             préparation du volume, secrets 0600, migrations
 Dockerfile · docker-compose.yml                                  image multi-étapes non root, composition durcie
@@ -141,7 +143,7 @@ Le chantier a été mené et vérifié dans un bac à sable sans démon Docker :
 `RAISON : ni docker ni podman dans l'environnement`). À la place, l'application a été lancée
 réellement en mode production (`node src/server.js`, migrations + bootstrap + service de
 l'interface + écoute `0.0.0.0:3000`), le smoke test a tourné contre cette instance
-(27/27), et les deux fichiers Docker ont été validés statiquement (analyse YAML avec
+(40/40), et les deux fichiers Docker ont été validés statiquement (analyse YAML avec
 résolution des ancres, `sh -n` sur l'entrypoint, recherche des motifs de durcissement).
 La CI (`ci/github-workflows-ci.yml`, à copier dans `.github/workflows/ci.yml` :
 voir [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) § 9) exécute, elle, la construction et la

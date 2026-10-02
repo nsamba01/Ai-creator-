@@ -161,9 +161,9 @@ texte, donc une charge utile `<img onerror=…>` téléversée ou saisie reste i
 | Outil | Rôle |
 |---|---|
 | `node scripts/lint.js` | syntaxe de tout le JS, import réel de 26 modules, motifs de secrets, primitives dangereuses, `console.*` dans `src/`, interpolation SQL, cohérence `.env.example` ↔ `process.env` utilisé, garde anti-`DROP` dans les migrations |
-| `npm test` | 197 tests répartis sur 10 fichiers, exécutés contre une vraie instance en mémoire/dossier temporaire |
+| `npm test` | 248 tests répartis sur 12 fichiers, exécutés contre une vraie instance en mémoire/dossier temporaire |
 | `node scripts/security-audit.js` | secrets dans le dépôt et l'index Git, permissions des fichiers de secrets, gardes de configuration (exécution réelle de `loadConfig`), Docker (root, `:latest`, `no-new-privileges`), `npm audit` production |
-| `node scripts/smoke-test.js` | 27 contrôles sur une **instance en cours d'exécution** : en-têtes, 401/403/404, CSRF opposable, changement de mot de passe forcé, SSRF, bouclage refusé, révocation après déconnexion, SPA et bundle |
+| `node scripts/smoke-test.js` | 40 contrôles sur une **instance en cours d'exécution** : en-têtes, 401/403/404, CSRF opposable, changement de mot de passe forcé, SSRF, bouclage refusé, révocation après déconnexion, SPA et bundle |
 
 ## 10. Limites connues (à assumer, pas à masquer)
 

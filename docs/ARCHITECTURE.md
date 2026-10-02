@@ -60,7 +60,7 @@ src/
   server.js     exécution : config → migrations → bootstrap → écoute → arrêt gracieux
 client/         SPA React (13 pages) : api.js, auth.jsx (contexte), router.js, ui.jsx, styles.css
 scripts/        lint.js (portique statique), smoke-test.js, security-audit.js, bootstrap-admin.js
-tests/          10 fichiers, 197 tests, harnais commun (helpers.js)
+tests/          12 fichiers, 248 tests, harnais commun (helpers.js)
 docker/         entrypoint.sh
 ```
 
@@ -101,10 +101,13 @@ e-mail/identifiant/nom de rôle/clé de permission/paires, index sur les colonne
 
 ## Extensions prévues
 
-* **Agent Vidéo** : phase A livrée (déclaration, sondage d'en-têtes en lecture par fenêtres,
-  quarantaine, quatre permissions, `client/pages/Videos.jsx`). Le transcodage, la lecture en
-  continu par `Range` et la transcription restent hors du processus web et sont décrits dans
-  [`VIDEO-AGENT.md`](VIDEO-AGENT.md).
+* **Agent Vidéo** : phases A et B livrées — déclaration, sondage d'en-têtes en lecture par
+  fenêtres, quarantaine, six permissions (`videos:upload|read|read:any|process|stream|manage-jobs`),
+  lecture en continu par `Range` (206/416/304, fichier épinglé sur sa taille en base), file
+  d'exécution `video_jobs` (claim sous transaction, bail, backoff, idempotence) et rattachement des
+  artefacts par `files.parent_file_id`. Le transcodage, les vignettes et la transcription restent
+  hors du processus web : ils appartiennent au worker (`scripts/video-worker.js`, conteneur sans
+  réseau). Détails et mesures dans [`VIDEO-AGENT.md`](VIDEO-AGENT.md).
 * **Stockage objet** : `files.service.js` centralise écriture/lecture ; un adaptateur S3 remplacerait le
   système de fichiers sans toucher les routes.
 * **Postgres** : les requêtes sont dans les dépôts (`src/repositories`) ; le portage se limite à la syntaxe

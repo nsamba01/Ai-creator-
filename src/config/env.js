@@ -220,6 +220,15 @@ export function loadConfig(env = process.env, overrides = {}) {
       useFfprobe: bool(env.VIDEO_USE_FFPROBE, true),
       ffprobePath: String(env.FFPROBE_PATH ?? 'ffprobe').trim() || 'ffprobe',
       quarantineOnFailure: bool(env.VIDEO_QUARANTINE_ON_FAILURE, true),
+      // Le processus worker (npm run worker) : kinds traités, cadence, et sort allowed when
+      // the loop must run in the web process (tests). Off by default — the media never gets
+      // processed inside the request loop.
+      workerKinds: String(env.VIDEO_WORKER_KINDS ?? 'probe')
+        .split(',')
+        .map((k) => k.trim())
+        .filter((k) => ['probe', 'transcode', 'transcribe', 'thumbnail', 'moderation'].includes(k)),
+      workerPollMs: int(env.VIDEO_WORKER_POLL_MS, 1000, { min: 100, max: 60_000 }),
+      workerInProcess: bool(env.VIDEO_WORKER_IN_PROCESS, false),
     },
 
     url: {

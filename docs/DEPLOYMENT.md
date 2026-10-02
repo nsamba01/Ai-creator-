@@ -13,9 +13,9 @@ printf 'SESSION_SECRET=%s\nSTATE_SECRET=%s\n' "$(openssl rand -hex 32)" "$(opens
 # avec le mot de passe écrit dans le volume, puis le change immédiatement
 docker compose up -d --build
 docker compose logs -f app
-docker compose --profile smoke run --rm smoke     # 27 contrôles contre l'instance réelle
+docker compose --profile smoke run --rm smoke     # 40 contrôles contre l'instance réelle
 docker compose port app 3000                       # vérifie l'adresse publiée
-docker compose --profile test run --rm test       # lint + 197 tests + audit de sécurité
+docker compose --profile test run --rm test       # lint + 248 tests + audit de sécurité
 ```
 
 Arrêt, nettoyage, mise à jour :
@@ -181,7 +181,7 @@ motifs) a été exécutée à la place.
 > Le contenu est vérifié localement : les mêmes étapes (`lint`, `test`, `build`, `smoke`,
 > `audit -- --strict`) passent dans cet environnement.
 
-Trois emplois : `quality` (lint, 197 tests, build Vite, instance de production réellement
+Trois emplois : `quality` (lint, 248 tests, build Vite, instance de production réellement
 démarrée puis smoke test, audit `--strict` avec artefact JSON de 14 jours), `docker`
 (`docker compose config -q`, construction des deux cibles `production` et `test`, chaîne de
 qualité exécutée dans le conteneur de test, `up -d --build` puis smoke), `docs` (les

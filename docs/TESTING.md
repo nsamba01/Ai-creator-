@@ -3,19 +3,19 @@
 ## Commandes
 
 ```bash
-npm test                      # 197 tests, 25 suites, une seule file (--test-concurrency=1)
+npm test                      # 248 tests, 32 suites, une seule file (--test-concurrency=1)
 npm run test:one -- tests/rbac.test.js   # un seul fichier de suite
 npm run lint                  # portique statique maison (aucune dépendance externe)
 npm run audit                 # audit de sécurité (secrets, index Git, config, Docker, npm audit)
 npm run build                 # build Vite de l'interface (nécessaire pour que / serve la SPA)
 npm run check                 # lint + tests + audit : c'est LE contrôle à passer avant de committer
-npm run smoke                 # 27 contrôles contre une instance réellement en cours d'exécution
+npm run smoke                 # 40 contrôles contre une instance réellement en cours d'exécution
 ```
 
 `npm run check` est ce que la CI exécute (workflow fourni sous `ci/github-workflows-ci.yml`, à copier dans
 `.github/workflows/ci.yml` — voir docs/DEPLOYMENT.md § 9). Résultat mesuré le 2026-10-02 dans cet
-environnement : lint `Aucun problème détecté` (sortie 0), **197 tests, 0 échec**,
-audit sans constat ouvert hors environnement connecté, smoke **27/27** sur une instance
+environnement : lint `Aucun problème détecté` (sortie 0), **248 tests, 0 échec**,
+audit sans constat ouvert hors environnement connecté, smoke **40/40** sur une instance
 de production locale.
 
 ## Ce que couvre chaque suite
@@ -31,7 +31,30 @@ de production locale.
 | `tests/files.test.js` | téléversement (extension + MIME + signature binaire), refus des vecteurs d'exécution, taille et quota, nommage UUID et résistance à `../`, dé-duplication par propriétaire, re-téléchargement, suppression logique + unlink, IDOR (lire/effacer le fichier d'autrui), compteur de téléchargements |
 | `tests/documents.test.js` | DOCX/XLSX (limites ZIP : taille décompressée, ratio, nombre d'entrées), CSV/TSV, JSON, Markdown, PDF heuristique, images (dimensions), masquage des sécrètes détectées |
 | `tests/url.test.js` | classification SSRF (IPv4/IPv6, plages réservées, `::ffff:127.0.0.1`, `2002::`), ports, redirections, délai, plafond d'octets, ré-épreuve de l'adresse résolue, aucune trace d'identifiants dans l'URL journalisée |
+| `tests/videos.test.js` | 28 sous-tests de l'agent vidéo (phase A) : commutateur en base, signature de conteneur, plafond de taille appliqué **pendant** le corps, refus d'un `.png` renommé, durée et dimensions hors bornes → quarantaine, `meta_json` borné, portée propriétaire sur le rapport, quarantaine/levée, `probe_source` fidèle à ce qui a été **lu** |
+| `tests/video-stream.test.js` | 23 sous-tests de la phase B : découpage `Range` en unitaire (plage unique, queue, `bytes=1-0`, multi-plages), comparaison octet par octet contre `fs`, 416 sans corps, 304, HEAD, les gardes de la route dont `VIDEO_SIZE_MISMATCH` provoqué en modifiant le fichier sur disque, claim exclusif par un seul worker, isolement par kinds, bail expiré repris et écriture refusée au worker décroché, backoff mesuré sur `run_after`, échec à `max_attempts`, message sans chemin, idempotence `UNIQUE(video_id, kind)`, purge journalisée, artefacts rattachés et emportés par la suppression de la source, `CHECK` de `video_jobs`, permissions |
 | `tests/security.test.js` | en-têtes et CSP, cookies (HttpOnly/`secure`/`SameSite`), CSRF double-submit + jeton de session, 401/403/404 normalisés sans fuite, échappement de rendu (charge XSS stockée puis rendue inerte), `redact()` au sink, charge utile JSON limite, refus des clés inconnues, **lecteur `.env`** (priorité à l'environnement, symlink/hors-racine refusés, aucune valeur journalisée) |
+
+## Parcours de bout en bout avec le worker
+
+Les suites ci-dessus tiennent en un seul processus. La file d'exécution ne se prouve qu'avec
+**deux** : le serveur qui accepte la déclaration, et `scripts/video-worker.js` qui la traite.
+Rejouable ainsi :
+
+```bash
+cp .env.example .env                 # puis renseigner DATA_DIR, SESSION_SECRET, STATE_SECRET
+node src/server.js &                 # API + SPA sur :3000
+node scripts/bootstrap-admin.js --email admin@local.test --password-file data/bootstrap-admin-password
+npm run worker:once                  # un tour de file, puis sortie (le mode service : `npm run worker`)
+```
+
+Ce qu'il faut y voir, et qui y a été vu le 2026-10-02 (21/21 contrôles) : avec
+`video.async_probe` à `true`, la déclaration répond `201` avec `queued: true` et un rapport
+`pending` (aucune durée inventée) ; `GET /api/videos/:id/stream` répond `409 VIDEO_NOT_READY` ;
+le tour de worker passe la tâche en `succeeded` et **remplit le rapport** ; la lecture répond
+alors `200`, et `Range: bytes=100000-100999` rend `206` avec exactement ces mille octets ; une
+tâche `thumbnail` reste `queued` devant un worker `VIDEO_WORKER_KINDS=probe`, puis est refusée
+`VIDEO_TOOL_UNAVAILABLE` par un worker `VIDEO_WORKER_KINDS=thumbnail`.
 
 ## Harnais (`tests/helpers.js`)
 
