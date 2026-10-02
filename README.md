@@ -5,10 +5,14 @@ d'administration React, contrôle d'accès par rôles et permissions, gestion de
 fichiers et d'agents, conteneurisée et tenue par une chaîne de qualité
 automatisée. Pensée pour tourner sur un seul serveur, sans service externe.
 
-> **État vérifié le 2026-10-02** : `npm run lint` sort 0 problème · **248 tests, 0 échec** ·
-> **40/40** contrôles de smoke test sur une instance de production réellement démarrée ·
-> audit de sécurité sans constat ouvert. Le détail des commandes et des limites est dans
-> [docs/TESTING.md](docs/TESTING.md) et [docs/SECURITY.md](docs/SECURITY.md).
+> **État vérifié le 2026-10-02** : `npm run lint` sort 0 problème · **271 tests, 0 échec** ·
+> **42/42** contrôles de smoke test sur une instance de production réellement démarrée ·
+> audit de sécurité sur 120 fichiers de l'arbre suivi, 0 constat. L'agent vidéo est **implémenté sur ses trois
+> premières phases** (déclaration et sondage, lecture par tranches et file sous bail, vignettes et
+> pistes audio produites par le worker) ; la transcription et le transcodage ne sont pas écrits et
+> sont refusés par un code d'erreur nommé, jamais simulés. Le détail des commandes et des limites est
+> dans [docs/TESTING.md](docs/TESTING.md), [docs/SECURITY.md](docs/SECURITY.md) et
+> [docs/VIDEO-AGENT.md](docs/VIDEO-AGENT.md).
 
 ## Démarrage en 60 secondes (Docker)
 
@@ -27,8 +31,8 @@ ensuite le fichier, puis repasser `BOOTSTRAP_ADMIN=0`.
 Contrôles disponibles immédiatement :
 
 ```bash
-docker compose --profile smoke run --rm smoke    # 27 vérifications sur l'instance en cours d'exécution
-docker compose --profile test  run --rm test     # lint + 248 tests + audit de sécurité
+docker compose --profile smoke run --rm smoke    # smoke test contre l'instance montée par la composition
+docker compose --profile test  run --rm test     # lint + 271 tests + audit de sécurité
 ```
 
 ## Démarrage sans Docker
@@ -53,7 +57,7 @@ sont en JSON sur la sortie standard (réduction automatique des valeurs sensible
 | **Fichiers** | liste blanche d'extensions **et** de MIME **et** signatures binaires, taille et quota, stockage UUID insensible à `../`, jamais de route statique, re-téléchargement par l'API authentifiée (`attachment`, `nosniff`, CSP `sandbox`) |
 | **Analyse de documents** | PDF, Word (DOCX), Excel (XLSX), CSV/TSV, JSON, Markdown, images — lecteurs écrits à la main, limites d'entrée (zipbomb incluses), sécrètes détectés **comptés et masqués** |
 | **Analyse d'URL** | agent serveur avec blocage SSRF complet (plages réservées IPv4/IPv6, formes encapsulées, ports, rebind DNS, redirections, délai 5 s, plafond 2 Mo), résultats persistés et audités |
-| **Agents et tâches** | définitions d'agents, file de tâches en base (claim, retries, `run_after`), tableau de bord d'exécution — l'[architecture de l'agent Vidéo](docs/VIDEO-AGENT.md) est conçue, **non implémentée** |
+| **Agents et tâches** | définitions d'agents, file de tâches en base (claim, retries, `run_after`), tableau de bord d'exécution ; l'[agent Vidéo](docs/VIDEO-AGENT.md) est en service sur ses trois premières phases, avec sa **propre** file (`video_jobs`) et son worker hors du processus web |
 | **Administration** | 11 pages : tableau de bord, utilisateurs, rôles, permissions, sessions, journaux d'audit, configuration, agents, tâches, fichiers, sécurité (posture chiffrée : en-têtes, débits, limites, versions de hachage) |
 
 ## Sécurité en bref
@@ -80,13 +84,13 @@ de fuite : [docs/SECURITY-POLICY.md](docs/SECURITY-POLICY.md).
 |---|---|
 | `npm start` / `npm run dev` | serveur (avec `--watch` en dev) |
 | `npm run build` | build Vite de l'interface vers `dist/` |
-| `npm test` | 248 tests (`node --test`, une file) |
+| `npm test` | 271 tests, 37 suites (`node --test`, une file) |
 | `npm run lint` | portique statique maison (syntaxe, imports, motifs de secret, cohérence `.env.example`) |
 | `npm run audit` | audit de sécurité (ajoutez `-- --strict` pour un code de sortie utile en CI) |
-| `npm run smoke` | 40 contrôles contre une instance en cours d'exécution (`SMOKE_BASE_URL`, `SMOKE_EMAIL`, `SMOKE_PASSWORD` ou `SMOKE_PASSWORD_FILE`) |
+| `npm run smoke` | 42 contrôles contre une instance en cours d'exécution (`SMOKE_BASE_URL`, `SMOKE_EMAIL`, `SMOKE_PASSWORD` ou `SMOKE_PASSWORD_FILE`) |
 | `npm run check` | `lint` + `test` + `audit` : à passer avant toute fusion |
-| `npm run worker` | worker vidéo : réclame les tâches de `video_jobs`, sonde, écrit le rapport (boucle de service) |
-| `npm run worker:once` | un seul tour du worker, puis sortie (utile en cron, en CI, ou pour ce parcours de bout en bout) |
+| `npm run worker` | worker vidéo : réclame les tâches de `video_jobs`, sonde, écrit le rapport, produit vignettes et pistes audio (boucle de service ; `VIDEO_WORKER_KINDS=probe,thumbnail`) |
+| `npm run worker:once` | un seul tour du worker, puis sortie (utile en cron, en CI, ou pour ce parcours de bout en bout) ; il annonce au démarrage si `ffprobe` et `ffmpeg` sont réellement là |
 | `npm run db:migrate` | migrations seules (idempotentes, empreinte SHA-256) |
 | `npm run admin:bootstrap -- --email a@b.c [--password-file f] [--rotate]` | premier administrateur, ou rotation |
 | `npm run compose:up` / `compose:down` / `compose:logs` / `compose:test` | alias Docker Compose |
@@ -114,15 +118,15 @@ ou l'inverse. Trois points à ne pas manquer :
 | [docs/SECURITY-POLICY.md](docs/SECURITY-POLICY.md) | règles de secrets, conduite en cas de fuite, hygiène de développement |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker, reverse proxy et TLS, premier administrateur, sauvegarde, migrations, systemd |
 | [docs/TESTING.md](docs/TESTING.md) | suites par domaine, harnais de test, règles d'écriture, ce qui n'est pas couvert |
-| [docs/VIDEO-AGENT.md](docs/VIDEO-AGENT.md) | conception de l'agent Vidéo (worker isolé, `ffprobe`/`ffmpeg` bornés), critères d'acceptation |
+| [docs/VIDEO-AGENT.md](docs/VIDEO-AGENT.md) | agent Vidéo : ce qui est implémenté (phases A à C), les bornes de `ffprobe`/`ffmpeg` dans le worker, les critères prouvés par tests, et ce qui reste à faire |
 
 ## Structure
 
 ```
-src/{config,db,repositories,services,middleware,routes,utils}   serveur applicatif (7 901 lignes)
-client/                                                          SPA React 18, 13 pages (2 791 lignes)
-tests/                                                           12 fichiers, 248 tests, harnais commun (4 118 lignes)
-scripts/                                                         lint, smoke test, audit de sécurité, bootstrap admin (833 lignes)
+src/{config,db,repositories,services,middleware,routes,utils}   serveur applicatif (10 907 lignes)
+client/                                                          SPA React 18, 13 pages (3 178 lignes)
+tests/                                                           13 fichiers, 271 tests, harnais commun (4 688 lignes)
+scripts/                                                         lint, smoke test, audit de sécurité, bootstrap admin, worker vidéo (1 129 lignes)
 docker/entrypoint.sh                                             préparation du volume, secrets 0600, migrations
 Dockerfile · docker-compose.yml                                  image multi-étapes non root, composition durcie
 docs/                                                            architecture, sécurité, déploiement, tests, agent vidéo
@@ -133,7 +137,11 @@ docs/                                                            architecture, s
 `node:sqlite` est marqué expérimental par Node ; Argon2id en pur JS est coûteux (le binding
 natif `argon2` est utilisé automatiquement s'il est installé) ; il n'y a pas d'antivirus pour
 les fichiers, l'analyse PDF est heuristique ; un seul nœud (pas de réplique de base ni de
-partage de fichiers) ; aucun test navigateur ; l'agent Vidéo est à l'état de conception.
+partage de fichiers) ; aucun test navigateur (le rendu React est vérifié par assertions
+structurelles, pas par un DOM réel) ; l'agent Vidéo traite le média **hors** du processus web et
+`ffmpeg` n'est pas embarqué dans l'image — il faut l'installer dans le conteneur du worker pour
+que les vignettes et les pistes se produisent, sinon la capacité reste ouverte mais chaque tâche
+est refusée sous `VIDEO_TOOL_UNAVAILABLE`.
 Liste complète et argumentée en fin de [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Exécution dans l'environnement de développement

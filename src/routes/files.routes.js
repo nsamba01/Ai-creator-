@@ -136,6 +136,7 @@ function mapSafeContentType(mime, ext) {
     'image/gif': 'image/gif',
     'image/webp': 'image/webp',
     'image/bmp': 'image/bmp',
+    'audio/wav': 'audio/wav',
     'application/pdf': 'application/pdf',
     'text/plain': 'text/plain; charset=utf-8',
   };

@@ -21,7 +21,7 @@ import { safeBinaryPath } from '../src/services/video.service.js';
 loadDotenv({ root: process.cwd() });
 const config = loadConfig();
 const runtime = createRuntime({ config });
-const { videos, videoJobs, db, audit } = runtime;
+const { videos, videoJobs, videoMedia: media, db, audit } = runtime;
 
 const workerId = `worker-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 const kinds = config.video?.workerKinds?.length ? config.video.workerKinds : ['probe'];
@@ -47,10 +47,20 @@ const handlers = {
     throw Object.assign(new Error('le transcodage demande le conteneur worker isolé (phase C)'), { code: 'VIDEO_TOOL_UNAVAILABLE', status: 503 });
   },
   transcribe: async () => {
-    throw Object.assign(new Error('la transcription demande un modèle ASR local (phase C)'), { code: 'VIDEO_TOOL_UNAVAILABLE', status: 503 });
+    throw Object.assign(new Error('la transcription demande un modèle ASR local (phase C) ; la piste audio se demande en tâche « thumbnail » avec { "format": "wav" }'), { code: 'VIDEO_TOOL_UNAVAILABLE', status: 503 });
   },
-  thumbnail: async () => {
-    throw Object.assign(new Error('les vignettes demandent ffmpeg (phase C)'), { code: 'VIDEO_TOOL_UNAVAILABLE', status: 503 });
+  // Vignette et piste audio : le seul kind « lourd » dont l'exécuteur existe déjà. Le service
+  // re-vérifie la source (taille épinglée, signature, rapport prêt) avant de lancer l'outil, et
+  // refuse nommément si le binaire est absent — rien n'est jamais marqué réussi pour rien.
+  thumbnail: async (job) => {
+    const out = await media.deriveForJob(job);
+    // Tout ce que le service a appliqué traverse le résultat : `width`, `atMs`, `maxBytes` ou
+    // `seconds` sont les grandeurs réelles de l'exécution. Les filtrer ici laisserait une tâche
+    // « réussie » dont on ne peut plus dire ce qu'elle a produit.
+    return {
+      ...out,
+      note: out.format === 'wav' ? 'piste audio extraite ; la transcription elle-même demande un modèle ASR local' : null,
+    };
   },
 };
 
@@ -59,6 +69,11 @@ if (safeBinaryPath(process.env.FFPROBE_PATH ?? 'ffprobe')) {
 } else {
   process.stdout.write('ffprobe absent : sondage sur en-têtes uniquement (aucune valeur inventée)\n');
 }
+// Vignettes et pistes audio : on annonce l'outil, sans jamais le laisser croire activé.
+process.stdout.write(
+  `ffmpeg ${media.resolveBin() ? `détecté (${process.env.FFMPEG_PATH ?? 'ffmpeg'})` : 'absent : tâches de vignette et de piste refusées sous VIDEO_TOOL_UNAVAILABLE'}` +
+    `${media.toolsEnabled() ? ', capacité ouverte par video.tools_enabled' : ', capacité fermée par video.tools_enabled'}\n`,
+);
 
 const runner = createVideoJobRunner({ service: videoJobs, videos, db, workerId, handlers, kinds });
 

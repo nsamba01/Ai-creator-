@@ -89,6 +89,31 @@ et par `tests/security.test.js` (comportement).
   `safeBinaryPath()` (ni `..`, ni métacaractère, bit d'exécution obligatoire), appelé sans
   shell avec une table d'arguments figée, un délai et un plafond de sortie d'1 Mio : aucun nom
   fourni par le client n'atteint la ligne de commande.
+* Traitement média (phase C, `src/services/video-ffmpeg.js` et `video-media.service.js`) : le
+  média n'est décodé que par le **worker**, jamais par le processus web, et seulement sous le
+  réglage `video.tools_enabled` (`false` par défaut). `ffmpeg` reçoit une table d'arguments
+  **construite à la main** — seuls des entiers bornés (`scale`, `-ss`, `-t`, `-ar`, `-ac`) et des
+  chemins internes : ni le nom d'origine du fichier, ni aucune chaîne de la tâche ne peuvent entrer
+  dans `argv`. `spawnSync` sans coquille, `env` réduit à `PATH`, délai dur écrêté à 5 minutes avec
+  `SIGKILL`, plafond d'octets sur la sortie, écriture dans un répertoire `0700` détruit en `finally`.
+  Une sortie n'est stockée que si elle est **signée** (PNG, ou `RIFF…WAVE`) et sous le plafond, sinon
+  422 `VIDEO_TOOL_OUTPUT_REFUSED` et `unlink` : un outil piégé ne dépose pas un `.png` qui est un
+  exécutable. L'artefact passe par `files.store` — **la même politique que les téléversements**
+  (extension, MIME, `MAGIC`, quota, `parent_file_id`, cascade) : il n'existe aucun chemin de
+  confiance spécial pour ce que produit le serveur, et c'est délibéré.
+* `.wav` est donc devenu un type accepté par la liste blanche (`audio/wav`, signature `RIFF/WAVE`
+  exigée) : un utilisateur peut téléverser un WAV, comme il pouvait téléverser un PNG. Ce n'est pas
+  un vecteur d'exécution — servi avec `nosniff`, `Content-Security-Policy: default-src 'none'` et
+  `attachment` sauf demande `?inline=1` explicite du porteur du droit.
+* Portée du worker : le porteur est le **propriétaire de la vidéo**, résolu par `videos.scopedRow()` :
+  le worker ne reçoit aucun droit supplémentaire du fait qu'il tourne hors requête. Une tâche dont la
+  vidéo n'existe pas ou n'a pas de propriétaire reçoit 404, comme un média inexistant.
+* Journaux : chaque refus (capacité fermée, outil absent, source refusée, sortie rejetée) est écrit
+  dans `audit_logs` en `warning` sous `video.<geste>.refused`, avec le message **neutralisé**
+  (`src/utils/sanitize.js`) — chemins absolus, URLs `file://` et paires `clé=valeur` de secret
+  remplacés. La colonne `error_message` d'une tâche et le détail d'un journal ne contiennent jamais
+  le chemin de stockage ; c'est vérifié en comparant les réponses et le journal du serveur à un
+  motif de chemin.
 * Les sécrètes et données personnelles détectés dans un document sont **comptés**, jamais
   restitués (`redactHits`) ; le texte brut n'est renvoyé que sur demande explicite
   (`includeText`) et tronqué.
@@ -161,9 +186,9 @@ texte, donc une charge utile `<img onerror=…>` téléversée ou saisie reste i
 | Outil | Rôle |
 |---|---|
 | `node scripts/lint.js` | syntaxe de tout le JS, import réel de 26 modules, motifs de secrets, primitives dangereuses, `console.*` dans `src/`, interpolation SQL, cohérence `.env.example` ↔ `process.env` utilisé, garde anti-`DROP` dans les migrations |
-| `npm test` | 248 tests répartis sur 12 fichiers, exécutés contre une vraie instance en mémoire/dossier temporaire |
+| `npm test` | 271 tests répartis sur 13 fichiers (37 suites), exécutés contre une vraie instance en mémoire/dossier temporaire — dont une exécution réelle d'un processus externe via un shim POSIX |
 | `node scripts/security-audit.js` | secrets dans le dépôt et l'index Git, permissions des fichiers de secrets, gardes de configuration (exécution réelle de `loadConfig`), Docker (root, `:latest`, `no-new-privileges`), `npm audit` production |
-| `node scripts/smoke-test.js` | 40 contrôles sur une **instance en cours d'exécution** : en-têtes, 401/403/404, CSRF opposable, changement de mot de passe forcé, SSRF, bouclage refusé, révocation après déconnexion, SPA et bundle |
+| `node scripts/smoke-test.js` | 42 contrôles sur une **instance en cours d'exécution** : en-têtes, 401/403/404, CSRF opposable, changement de mot de passe forcé, SSRF, bouclage refusé, révocation après déconnexion, SPA et bundle |
 
 ## 10. Limites connues (à assumer, pas à masquer)
 
@@ -171,15 +196,21 @@ texte, donc une charge utile `<img onerror=…>` téléversée ou saisie reste i
    étroite (préparations, transactions, pragmas) pour réduire le risque de rupture.
 2. Argon2id en pur JS est coûteux en CPU : sur un petit VPS, abaisser le débit d'authentification
    ou installer le binding natif (`npm i argon2`, détecté automatiquement).
-3. Pas d'antivirus ni de sandbox d'exécution pour les fichiers : ils sont stockés et rendus
-   inoffensifs, non analysés en profondeur ; l'analyse PDF est heuristique (texte simple).
+3. Pas d'antivirus : les fichiers sont stockés et rendus inoffensifs, non analysés en profondeur ;
+   l'analyse PDF est heuristique (texte simple). Depuis la phase C il existe une frontière
+   d'exécution **pour les médias seulement** (worker sans réseau, arguments figés, délais et plafonds,
+   bac à sable `0700`) — mais ce n'est pas un sandbox noyau : se fier à `docker-compose.yml`
+   (`network_mode: none`, `read_only`, limites) ou à un équivalent d'orchestrateur, pas à Node.
 4. Un seul nœud, base SQLite : la haute disponibilité et le partage de fichier entre répliques
    ne sont pas couverts (voir `VIDEO-AGENT.md` pour la mise à l'échelle des tâches longues).
-5. Le rapport vidéo est **déclaratif** : il lit ce que l'en-tête du conteneur annonce. Un
-   fichier peut mentir sur sa durée ou sa résolution sans que la phase A le détecte ; c'est
-   pourquoi un résultat incohérent est mis en quarantaine et qu'aucun rendu n'est autorisé.
-   La vérification par décodage réel, la lecture en continu (`Range`) et le transcodage
-   restent à faire, dans un worker à part.
+5. Le rapport vidéo est **déclaratif** : il lit ce que l'en-tête du conteneur annonce. Un fichier
+   peut mentir sur sa durée ou sa résolution sans que le sondage le détecte ; c'est pourquoi un
+   résultat incohérent est mis en quarantaine et qu'aucun rendu n'est autorisé. La lecture en
+   continu (`Range`) est en place, la vignette et la piste audio aussi — mais **aucun décodage
+   complet n'est exigé** : produire une vignette ne prouve pas que tout le fichier se décode.
+   Restent à faire : le transcodage, la transcription (aucun modèle ASR branché) et la vérification
+   systématique par décodage, tous trois dans le worker. Le dépôt n'embarque aucun binaire `ffmpeg` :
+   les tests exercent l'enveloppe avec un shim, pas la résistance du décodeur réel.
 6. Le smoke test et les tests d'API ne remplacent pas un test navigateur (Playwright) : la
    chaîne de rendu React est vérifiée par des assertions structurelles et l'absence de
    `dangerouslySetInnerHTML`, pas par un DOM réel.

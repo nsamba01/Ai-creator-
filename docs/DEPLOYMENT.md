@@ -13,9 +13,9 @@ printf 'SESSION_SECRET=%s\nSTATE_SECRET=%s\n' "$(openssl rand -hex 32)" "$(opens
 # avec le mot de passe écrit dans le volume, puis le change immédiatement
 docker compose up -d --build
 docker compose logs -f app
-docker compose --profile smoke run --rm smoke     # 40 contrôles contre l'instance réelle
+docker compose --profile smoke run --rm smoke     # les contrôles de `npm run smoke` (42 avec identifiants) contre l'instance réelle
 docker compose port app 3000                       # vérifie l'adresse publiée
-docker compose --profile test run --rm test       # lint + 248 tests + audit de sécurité
+docker compose --profile test run --rm test       # lint + 271 tests + audit de sécurité
 ```
 
 Arrêt, nettoyage, mise à jour :
@@ -32,6 +32,7 @@ docker volume ls | grep princesamba_data
 |---|---|
 | `volume-init` | one-shot **root** avec `CHOWN`/`FOWNER` uniquement : rend `princesamba_data` lisible/écrivable par l'UID 10001, puis s'arrête ; `app` l'attend via `service_completed_successfully` |
 | `app` | l'application, image cible `production`, système de fichiers **en lecture seule**, volume monté sur `/app/data`, ports publiés `${APP_BIND:-127.0.0.1}:${APP_PORT:-3000}` (boucle locale par défaut) |
+| `worker` | **processus séparé** de l'agent vidéo : réclame les tâches de `video_jobs`, sonde, produit vignettes et pistes audio. `network_mode: none` (il ne doit rien pouvoir contacter), `read_only` avec un `tmpfs` de travail, `cap_drop: [ALL]`, `no-new-privileges`, `cpus`/`mem_limit`/`pids_limit` bornés, `depends_on: app: service_healthy` pour ne pas courir après les migrations. Variables : `VIDEO_WORKER_KINDS` (défaut `probe` — `thumbnail` est un choix explicite), `VIDEO_WORKER_POLL_MS`, `FFMPEG_PATH`, `VIDEO_TOOL_TIMEOUT_MS` |
 | `smoke` | profil `smoke`, attend `service_healthy` puis lance `node scripts/smoke-test.js` |
 | `test` | profil `test`, image cible `test` (dépendances de développement incluses), lance lint + tests + audit |
 
@@ -49,6 +50,21 @@ absents**, migrations, puis `exec "$@"`. Les secrets existants ne sont jamais
 
 Les mêmes commandes ont des alias npm : `npm run compose:up`, `compose:down`,
 `compose:logs`, `compose:test`.
+
+**Ouvrir le traitement des médias** (vignettes, pistes audio) est un acte en deux temps, et
+l'image ne le fait pas toute seule : `ffmpeg` n'est pas embarqué (le Dockerfile n'installe aucun
+décodeur), donc il faut soit l'ajouter au worker via une image dérivée
+(`RUN apk add --no-cache ffmpeg`), soit monter un binaire existant. Ensuite seulement, ouvrir le
+réglage `video.tools_enabled` (page Configuration, ou `PUT /api/admin/settings`). Tant que l'un
+des deux manque, le comportement est délibérément visible et non simulé : la tâche est acceptée
+(`202`), le worker la refuse (`VIDEO_TOOL_UNAVAILABLE` 503 côté service, code d'erreur `VIDEO_TOOL_UNAVAILABLE`
+dans la ligne de file), et le refus est journalisé. Le worker annonce d'ailleurs au démarrage, en
+toutes lettres, s'il voit `ffprobe` et `ffmpeg`, et si la capacité est ouverte.
+
+Un réglage de cadence n'existe pas en base : `VIDEO_WORKER_POLL_MS` et `VIDEO_TOOL_TIMEOUT_MS`
+viennent de l'environnement, parce que ce sont des propriétés du processus. Les plafonds de
+production (taille de vignette, position de lecture, durée de piste) sont des réglages en base,
+pour pouvoir être fermés sans redéploiement.
 
 ## 2. Configuration
 
@@ -141,6 +157,24 @@ Unité systemd : `DynamicUser=yes`, `StateDirectory=princesamba`, `ProtectSystem
 `CapabilityBoundingSet=`vide, `EnvironmentFile=/etc/princesamba/env`. L'application ne
 doit écrire que dans `DATA_DIR`.
 
+Le worker se déploie comme une seconde unité sur le même fichier d'environnement, avec son propre
+durcissement (`IPAddressAllow=none` n'a pas de sens sans réseau : on lui donne `PrivateNetwork=yes`,
+l'équivalent de `network_mode: none`), et peut aussi tourner en cron par `npm run worker:once` — un
+tour puis sortie, ce qui suffit à faire avancer la file sans processus permanent :
+
+```ini
+[Service]
+ExecStart=/usr/bin/npm run worker
+EnvironmentFile=/etc/princesamba/env
+PrivateNetwork=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/princesamba
+TimeoutStopSec=30
+```
+
+Sans `ffmpeg` installé, le service tourne et refuse nommément les tâches lourdes : c'est l'état
+attendu, pas une installation cassée.
+
 ## 7. Mises à jour et retours arrière
 
 * Les migrations sont montantes et horodatées avec une empreinte SHA-256 ; une migration
@@ -181,7 +215,7 @@ motifs) a été exécutée à la place.
 > Le contenu est vérifié localement : les mêmes étapes (`lint`, `test`, `build`, `smoke`,
 > `audit -- --strict`) passent dans cet environnement.
 
-Trois emplois : `quality` (lint, 248 tests, build Vite, instance de production réellement
+Trois emplois : `quality` (lint, 271 tests, build Vite, instance de production réellement
 démarrée puis smoke test, audit `--strict` avec artefact JSON de 14 jours), `docker`
 (`docker compose config -q`, construction des deux cibles `production` et `test`, chaîne de
 qualité exécutée dans le conteneur de test, `up -d --build` puis smoke), `docs` (les

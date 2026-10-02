@@ -21,6 +21,10 @@
     "smoke": "node scripts/smoke-test.js",
     "audit": "node scripts/security-audit.js",
     "lint": "node scripts/lint.js",
+    "compose:up": "docker compose up -d --build",
+    "compose:down": "docker compose down",
+    "compose:logs": "docker compose logs -f app",
+    "compose:test": "docker compose --profile test run --rm test",
     "check": "npm run lint && npm test && npm run audit"
   },
   "dependencies": {

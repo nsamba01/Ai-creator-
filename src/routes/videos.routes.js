@@ -34,9 +34,21 @@ import { classifyExtension, FORBIDDEN_EXTENSIONS } from '../services/files.servi
 import { VIDEO_ERRORS, VIDEO_EXTENSIONS } from '../services/video.service.js';
 import fs from 'node:fs';
 
+/** Clés connues, types connus : ce qui entre dans `input_json` de la file. */
+function sanitizeJobInput(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out = {};
+  if (raw.format === 'png' || raw.format === 'wav') out.format = raw.format;
+  for (const key of ['atMs', 'width', 'maxSeconds', 'maxKb']) {
+    const n = Number(raw[key]);
+    if (Number.isFinite(n)) out[key] = Math.max(0, Math.min(86_400_000, Math.trunc(n)));
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 export function createVideoRoutes(runtime) {
   const router = Router();
-  const { config, videos, files, videoJobs, videoStream } = runtime;
+  const { config, videos, files, videoJobs, videoStream, videoMedia } = runtime;
   const { requireAuth, requirePermission } = runtime.middlewares;
 
   // Le plafond annoncé à multer est celui qui sera réellement appliqué : sans ça, un client
@@ -132,13 +144,23 @@ export function createVideoRoutes(runtime) {
   router.get('/stats', requireAuth, requirePermission('videos:read'), noStore, wrap(async (req, res) => {
     const all = scopeAll(req);
     const out = videos.stats({ actor: req.user, scopeAll: all });
-    res.json({ ...out, streaming: videoStream.enabled(), jobs: videoJobs.stats({ actor: req.user, scopeAll: all }) });
+    res.json({
+      ...out,
+      streaming: videoStream.enabled(),
+      // L'interface doit pouvoir dire « la vignette est possible ici » sans deviner : c'est le
+      // serveur qui rend l'état du commutateur et de l'outil, pas une constante du client.
+      tools: { enabled: videoMedia.toolsEnabled(), binary: Boolean(videoMedia.resolveBin()), limits: videoMedia.limits() },
+      jobs: videoJobs.stats({ actor: req.user, scopeAll: all }),
+    });
   }));
 
   router.post('/:id/jobs', requireAuth, noStore, validateBody({
     kind: { type: 'string', required: false, enum: ['probe', 'transcode', 'transcribe', 'thumbnail', 'moderation'], default: 'probe' },
+    // Les paramètres d'une tâche voyagent avec elle, mais ne sont pas une saisie libre : liste
+    // fermée de clés, types bornés. Le service re-borne de son côté (défense en profondeur).
+    input: { type: 'object', required: false, keys: ['format', 'atMs', 'width', 'maxSeconds', 'maxKb'], enumPerKey: { format: ['png', 'wav'] }, maxKeys: 5 },
   }), wrap(async (req, res) => {
-    const out = videoJobs.enqueue({ actor: req.user, videoId: Number(req.params.id), kind: req.validated.kind });
+    const out = videoJobs.enqueue({ actor: req.user, videoId: Number(req.params.id), kind: req.validated.kind, input: sanitizeJobInput(req.validated.input) });
     res.status(202).json(out);
   }));
 

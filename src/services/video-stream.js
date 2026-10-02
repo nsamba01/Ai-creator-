@@ -16,8 +16,11 @@
  *    injecté depuis un nom de fichier serait une faille de réponse).
  */
 import fs from 'node:fs';
-import { AppError, forbidden, notFound } from '../utils/errors.js';
+import { AppError, notFound } from '../utils/errors.js';
+import { assertReadyForRender, verifiedSource } from './video-source.js';
 
+// Les codes de refus de la source vivent dans `video-source.js` (lus par le flux et par le
+// traitement hors-bande) ; `DISABLED` est propre à cette route et n'a pas d'équivalent ailleurs.
 export const STREAM_ERRORS = {
   DISABLED: 'VIDEO_STREAM_DISABLED',
   NOT_READY: 'VIDEO_NOT_READY',
@@ -95,38 +98,10 @@ export function createVideoStream({ db, files, videos, settings = null } = {}) {
     }
     videos?.assertEnabled?.();
 
+    // Portée, état du rapport, puis octets vérifiés : trois appels, aucune règle écrite deux fois.
     const asset = videos.scopedRow({ id, actor, scopeAll });
-    if (asset.status !== 'ready') {
-      const why =
-        asset.status === 'quarantined'
-          ? 'Vidéo en quarantaine : aucun octet de média n’est servi tant qu’un administrateur ne l’a pas validée.'
-          : asset.status === 'failed'
-            ? 'Le sondage a échoué : relancez-le avant de lire.'
-            : 'Le sondage n’est pas terminé : la lecture n’ouvrira qu’une vidéo déclarée prête.';
-      throw new AppError(409, STREAM_ERRORS.NOT_READY, why, { status: asset.status, errorCode: asset.error_code ?? null });
-    }
-
-    const fileRow = db.get(`SELECT * FROM files WHERE id = ? AND deleted_at IS NULL`, [asset.file_id]);
-    if (!fileRow) throw notFound('Fichier source introuvable.');
-    if (fileRow.kind !== 'video' || Number(fileRow.magic_ok) !== 1) {
-      throw new AppError(403, STREAM_ERRORS.UNSAFE_SOURCE, 'Source refusée : le fichier n’a pas été validé comme vidéo.');
-    }
-
-    const abs = files.resolveStored(fileRow.relative_path);
-    let st = null;
-    try {
-      st = fs.statSync(abs);
-    } catch {
-      throw notFound('Fichier absent du stockage.');
-    }
-    if (!st.isFile()) throw new AppError(403, STREAM_ERRORS.UNSAFE_SOURCE, 'Source refusée : le chemin de stockage n’est pas un fichier régulier.');
-    const size = st.size;
-    if (Number(fileRow.size_bytes) !== size) {
-      throw new AppError(409, STREAM_ERRORS.SIZE_MISMATCH, 'Taille sur disque différente de celle enregistrée : contenu à revérifier.', {
-        expected: Number(fileRow.size_bytes),
-        found: size,
-      });
-    }
+    assertReadyForRender(asset);
+    const { fileRow, abs, size } = verifiedSource({ db, files, asset });
 
     const mime = CONTAINER_MIME[asset.container] ?? (ALLOWED_MIME.has(fileRow.mime_type) ? fileRow.mime_type : 'video/mp4');
     const etag = `W/"${String(asset.sha256 ?? 'x').slice(0, 16)}-${size}"`;

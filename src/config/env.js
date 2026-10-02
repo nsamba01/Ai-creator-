@@ -229,6 +229,10 @@ export function loadConfig(env = process.env, overrides = {}) {
         .filter((k) => ['probe', 'transcode', 'transcribe', 'thumbnail', 'moderation'].includes(k)),
       workerPollMs: int(env.VIDEO_WORKER_POLL_MS, 1000, { min: 100, max: 60_000 }),
       workerInProcess: bool(env.VIDEO_WORKER_IN_PROCESS, false),
+      // Phase C : outillage media. Le chemin est verifie par safeBinaryPath avant tout spawn ;
+      // le delai est borne a 5 minutes meme si un reglage tente de le monter davantage.
+      ffmpegPath: String(env.FFMPEG_PATH ?? 'ffmpeg').trim() || 'ffmpeg',
+      toolTimeoutMs: int(env.VIDEO_TOOL_TIMEOUT_MS, 30_000, { min: 1000, max: 300_000 }),
     },
 
     url: {

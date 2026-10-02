@@ -87,6 +87,42 @@ function applySpec(name, spec, raw, hasValue) {
       if (spec.lower) return { value: unique.map((i) => i.toLowerCase()) };
       return { value: unique };
     }
+    case 'object': {
+      // Objet STRICT et plat : c'est la réponse au « aucun champ superflu » pour les objets
+      // imbriqués. Sans ce cas, un paramètre de tâche aurait été soit ignoré (donc muet), soit
+      // accepté avec n'importe quelles clés (donc masse-assignable).
+      if (typeof raw !== 'object' || Array.isArray(raw)) throw badRequest(`« ${label} » : objet attendu.`, { field: name });
+      const allowed = Array.isArray(spec.keys) && spec.keys.length ? spec.keys : null;
+      const maxKeys = spec.maxKeys ?? 12;
+      const maxValueLen = spec.maxValueLen ?? 64;
+      const entries = Object.entries(raw);
+      if (entries.length > maxKeys) throw badRequest(`« ${label} » : au plus ${maxKeys} champs.`, { field: name });
+      const out = {};
+      for (const [k, v] of entries) {
+        if (allowed && !allowed.includes(k)) {
+          throw badRequest(`« ${label} » : champ « ${String(k).slice(0, 40)} » non autorisé.`, { field: name, allowed });
+        }
+        if (CONTROL_RE.test(String(k))) throw badRequest(`« ${label} » : nom de champ invalide.`, { field: name });
+        if (v === null || v === undefined) continue;
+        if (typeof v === 'number') {
+          if (!Number.isFinite(v)) throw badRequest(`« ${label} » : « ${k} » doit être un nombre fini.`, { field: name });
+          out[k] = Math.trunc(v);
+        } else if (typeof v === 'boolean') {
+          out[k] = v;
+        } else if (typeof v === 'string') {
+          const text = v.trim();
+          if (CONTROL_RE.test(text)) throw badRequest(`« ${label} » : « ${k} » contient des caractères de contrôle.`, { field: name });
+          if (text.length > maxValueLen) throw badRequest(`« ${label} » : « ${k} » : au plus ${maxValueLen} caractères.`, { field: name });
+          if (spec.enumPerKey?.[k] && !spec.enumPerKey[k].includes(text)) {
+            throw badRequest(`« ${label} » : « ${k} » : valeur non autorisée.`, { field: name, allowed: spec.enumPerKey[k] });
+          }
+          out[k] = text;
+        } else {
+          throw badRequest(`« ${label} » : « ${k} » doit être un texte court, un entier ou un booléen.`, { field: name });
+        }
+      }
+      return { value: out };
+    }
     case 'id': {
       const n = Number(raw);
       if (!Number.isInteger(n) || n <= 0 || n > 2_147_483_647) throw badRequest(`« ${label} » : identifiant invalide.`, { field: name });

@@ -21,6 +21,7 @@ import { createAgentService } from './services/agents.service.js';
 import { createVideoService } from './services/video.service.js';
 import { createVideoJobService } from './services/video-jobs.service.js';
 import { createVideoStream } from './services/video-stream.js';
+import { createVideoMediaService } from './services/video-media.service.js';
 import { createDashboardService } from './services/dashboard.service.js';
 import * as sessionsRepo from './repositories/sessions.repo.js';
 
@@ -41,6 +42,9 @@ export function createRuntime({ config = null, runMigrations = true } = {}) {
   const videos = createVideoService({ db, config: cfg, audit, files, agents, settings });
   const videoJobs = createVideoJobService({ db, config: cfg, settings, audit, videos });
   const videoStream = createVideoStream({ db, files, videos, settings });
+  // Le traitement média (vignette, piste) naît ici mais n'est jamais appelé par une route de page :
+  // seul le worker s'en sert, sur une tâche déjà acceptée en file.
+  const videoMedia = createVideoMediaService({ db, config: cfg, settings, files, videos, audit });
   // Le service de jobs dépend des vidéos, et la déclaration a besoin des jobs : liaison
   // différée, explicite, plutôt qu'un import circulaire résolu à la chance.
   videos.attachJobs(videoJobs);
@@ -60,6 +64,7 @@ export function createRuntime({ config = null, runMigrations = true } = {}) {
     videos,
     videoJobs,
     videoStream,
+    videoMedia,
     dashboard,
     users: usersRepo,
     touchSession(id) {

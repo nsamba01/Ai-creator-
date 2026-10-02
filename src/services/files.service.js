@@ -51,6 +51,10 @@ export const KIND_BY_EXT = {
   '.mkv': 'video',
   '.webm': 'video',
   '.avi': 'video',
+  // Format des pistes audio produites par le worker. Il est accepté ici, et non par
+  // une porte « de confiance » à part : un artefact serveur traverse exactement la
+  // même politique qu'un téléversement, signature binaire comprise.
+  '.wav': 'audio',
 };
 
 /** Refused outright: executable or browser-renderable content. */
@@ -88,12 +92,18 @@ const MIME_FAMILIES = {
   '.mkv': ['video/x-matroska', 'video/matroska'],
   '.webm': ['video/webm'],
   '.avi': ['video/x-msvideo', 'video/avi', 'avi'],
+  '.wav': ['audio/wav', 'audio/x-wav', 'audio/wave', 'audio/vnd.wave'],
 };
 
 const MAGIC = [
   { ext: ['.png'], mime: 'image/png', test: (b) => b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 },
   { ext: ['.jpg', '.jpeg'], mime: 'image/jpeg', test: (b) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
   { ext: ['.gif'], mime: 'image/gif', test: (b) => b.length > 6 && b.subarray(0, 6).toString('latin1').startsWith('GIF8') },
+  {
+    ext: ['.wav'],
+    mime: 'audio/wav',
+    test: (b) => b.length > 12 && b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WAVE',
+  },
   {
     ext: ['.webp'],
     mime: 'image/webp',

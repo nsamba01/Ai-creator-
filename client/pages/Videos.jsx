@@ -45,6 +45,7 @@ export default function Videos() {
   const [localError, setLocalError] = useState(null);
   const [notice, setNotice] = useState(null);
   const [jobs, setJobs] = useState(null);
+  const [artifacts, setArtifacts] = useState([]);
   const inputRef = useRef(null);
   const { can } = useAuth();
   const stats_ = data?.stats;
@@ -102,7 +103,10 @@ export default function Videos() {
   const open = (row) =>
     run(async () => {
       setJobs(null);
-      setDetail(await api.get(`/api/videos/${row.id}`));
+      setArtifacts([]);
+      const [d, f] = await Promise.all([api.get(`/api/videos/${row.id}`), api.get(`/api/files/${row.fileId}`).catch(() => null)]);
+      setDetail(d);
+      setArtifacts((f?.children ?? []).filter((c) => c.kind === 'image' || c.kind === 'audio'));
       await loadJobs(row.id);
       return null;
     });
@@ -115,10 +119,17 @@ export default function Videos() {
       return action === 'probe' ? 'Sondage relancé.' : action === 'release' ? 'Quarantaine levée.' : 'Vidéo placée en quarantaine.';
     });
 
+  const refreshArtifacts = (assetRow) =>
+    api
+      .get(`/api/files/${assetRow?.fileId}`)
+      .then((f) => setArtifacts((f?.children ?? []).filter((c) => c.kind === 'image' || c.kind === 'audio')))
+      .catch(() => setArtifacts([]));
+
   const enqueue = (id, kind) =>
     run(async () => {
       const out = await api.post(`/api/videos/${id}/jobs`, { kind });
       await loadJobs(id);
+      await refreshArtifacts(detail?.asset);
       return `Tâche « ${kind} » en file${out.job?.id ? ` (n° ${out.job.id})` : ''} : un worker la prendra, la requête ne la traite pas.`;
     });
 
@@ -244,6 +255,37 @@ export default function Videos() {
                 : 'Pas de lecteur : la lecture en continu est fermée. Un administrateur doit ouvrir le réglage video.stream_enabled.'}
             </InfoNote>
           )}
+          <h3 className="section-title">Artefacts produits à partir de ce média</h3>
+          {artifacts.length ? (
+            <div className="artefacts">
+              {artifacts.map((a) => (
+                <figure key={a.id} className="artefact">
+                  {a.kind === 'audio' || /audio/.test(String(a.mimeType ?? '')) ? (
+                    <audio controls src={`/api/files/${a.id}/content?inline=1`} />
+                  ) : (
+                    <img src={`/api/files/${a.id}/content?inline=1`} alt={`Artefact ${a.id} de la vidéo`} loading="lazy" />
+                  )}
+                  <figcaption className="muted small">
+                    #{a.id} · {megaoctets(a.sizeBytes)} · produit par le worker
+                  </figcaption>
+                </figure>
+              ))}
+            </div>
+          ) : (
+            <p className="muted small">Aucun artefact rattaché : vignettes et pistes audio apparaîtront ici, une fois la tâche exécutée par un worker.</p>
+          )}
+          {stats_?.tools && !stats_.tools.enabled ? (
+            <InfoNote tone="info">
+              La production d’artefacts est fermée : un administrateur doit ouvrir le réglage <code>video.tools_enabled</code>. Le worker, seul, exécute
+              l’outil — jamais ce navigateur ni le processus web.
+            </InfoNote>
+          ) : null}
+          {stats_?.tools?.enabled && !stats_?.tools?.binary ? (
+            <InfoNote tone="warning">
+              Capacité ouverte, mais aucun outil média détecté sur ce serveur : les tâches de vignette et de piste seront refusées sous{' '}
+              <code>VIDEO_TOOL_UNAVAILABLE</code>, pas marquées réussies.
+            </InfoNote>
+          ) : null}
           <h3 className="section-title">File d’exécution</h3>
           {jobs?.failed ? (
             <p className="muted small">Bordereau de file indisponible — le rapport de sondage ci-dessus reste valable.</p>

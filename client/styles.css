@@ -197,6 +197,10 @@ tr.clickable { cursor: pointer; }
 .video-player { display: grid; gap: 6px; margin: 4px 0 10px; }
 .video-player video { width: 100%; max-height: 46vh; background: #05070d; border: 1px solid var(--line); border-radius: 10px; }
 .modal h3.section-title { margin-top: 14px; }
+/* Artefacts produits par le worker : images rendues par la route de contenu, jamais par un chemin brut. */
+.artefacts { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 4px; }
+.artefact { margin: 0; display: grid; gap: 4px; }
+.artefact img { width: 168px; height: auto; object-fit: cover; border: 1px solid var(--line); border-radius: 8px; background: #05070d; }
 
 .code-block { background: #0c1428; border: 1px solid var(--line); border-radius: 9px; padding: 12px; overflow: auto; max-height: 320px; margin: 0; }
 .secret-box { background: #0c1428; border: 1px dashed var(--accent); border-radius: 9px; padding: 12px; font-size: 1.02rem; letter-spacing: 0.5px; user-select: all; }

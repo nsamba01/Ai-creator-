@@ -3,20 +3,21 @@
 ## Commandes
 
 ```bash
-npm test                      # 248 tests, 32 suites, une seule file (--test-concurrency=1)
+npm test                      # 271 tests, 37 suites, une seule file (--test-concurrency=1)
 npm run test:one -- tests/rbac.test.js   # un seul fichier de suite
 npm run lint                  # portique statique maison (aucune dépendance externe)
 npm run audit                 # audit de sécurité (secrets, index Git, config, Docker, npm audit)
 npm run build                 # build Vite de l'interface (nécessaire pour que / serve la SPA)
 npm run check                 # lint + tests + audit : c'est LE contrôle à passer avant de committer
-npm run smoke                 # 40 contrôles contre une instance réellement en cours d'exécution
+npm run smoke                 # 42 contrôles contre une instance réellement en cours d'exécution
 ```
 
 `npm run check` est ce que la CI exécute (workflow fourni sous `ci/github-workflows-ci.yml`, à copier dans
 `.github/workflows/ci.yml` — voir docs/DEPLOYMENT.md § 9). Résultat mesuré le 2026-10-02 dans cet
-environnement : lint `Aucun problème détecté` (sortie 0), **248 tests, 0 échec**,
-audit sans constat ouvert hors environnement connecté, smoke **40/40** sur une instance
-de production locale.
+environnement : lint `Aucun problème détecté` (sortie 0, 7 dérogations `lint-allow` comptées),
+**271 tests, 0 échec** (37 suites), audit de sécurité sur 120 fichiers de l'arbre suivi — 121
+quand un `.env` local est présent — sans constat ouvert hors environnement connecté, et smoke
+**42/42** sur une instance de production locale.
 
 ## Ce que couvre chaque suite
 
@@ -33,6 +34,7 @@ de production locale.
 | `tests/url.test.js` | classification SSRF (IPv4/IPv6, plages réservées, `::ffff:127.0.0.1`, `2002::`), ports, redirections, délai, plafond d'octets, ré-épreuve de l'adresse résolue, aucune trace d'identifiants dans l'URL journalisée |
 | `tests/videos.test.js` | 28 sous-tests de l'agent vidéo (phase A) : commutateur en base, signature de conteneur, plafond de taille appliqué **pendant** le corps, refus d'un `.png` renommé, durée et dimensions hors bornes → quarantaine, `meta_json` borné, portée propriétaire sur le rapport, quarantaine/levée, `probe_source` fidèle à ce qui a été **lu** |
 | `tests/video-stream.test.js` | 23 sous-tests de la phase B : découpage `Range` en unitaire (plage unique, queue, `bytes=1-0`, multi-plages), comparaison octet par octet contre `fs`, 416 sans corps, 304, HEAD, les gardes de la route dont `VIDEO_SIZE_MISMATCH` provoqué en modifiant le fichier sur disque, claim exclusif par un seul worker, isolement par kinds, bail expiré repris et écriture refusée au worker décroché, backoff mesuré sur `run_after`, échec à `max_attempts`, message sans chemin, idempotence `UNIQUE(video_id, kind)`, purge journalisée, artefacts rattachés et emportés par la suppression de la source, `CHECK` de `video_jobs`, permissions |
+| `tests/video-tools.test.js` | 23 sous-tests de la phase C : argv sans aucun mot du client et borné des deux côtés, scratch `0700` et contention du nom, exécution **réelle** d'un shim POSIX (succès, sortie trop volumineuse jetée du disque, SIGKILL au délai mesuré, code non nul traduit sans chemin, sortie vide ou non-PNG refusée, jamais de coquille), les six portes du service (capacité, portée, prêt, taille épinglée, binaire, signature), rattachement et relecture en ligne de l'artefact, `audio/wav` sous la même politique de stockage que les téléversements, refus de capacité journalisé, `input` de tâche re-borne, 404 non bavard |
 | `tests/security.test.js` | en-têtes et CSP, cookies (HttpOnly/`secure`/`SameSite`), CSRF double-submit + jeton de session, 401/403/404 normalisés sans fuite, échappement de rendu (charge XSS stockée puis rendue inerte), `redact()` au sink, charge utile JSON limite, refus des clés inconnues, **lecteur `.env`** (priorité à l'environnement, symlink/hors-racine refusés, aucune valeur journalisée) |
 
 ## Parcours de bout en bout avec le worker
@@ -45,8 +47,15 @@ Rejouable ainsi :
 cp .env.example .env                 # puis renseigner DATA_DIR, SESSION_SECRET, STATE_SECRET
 node src/server.js &                 # API + SPA sur :3000
 node scripts/bootstrap-admin.js --email admin@local.test --password-file data/bootstrap-admin-password
-npm run worker:once                  # un tour de file, puis sortie (le mode service : `npm run worker`)
+FFMPEG_PATH=/chemin/vers/ffmpeg npm run worker:once   # un tour de file, puis sortie (le mode service : `npm run worker`)
 ```
+
+Sans `ffmpeg` sur la machine — le cas de cet environnement de développement — le worker dit la
+vérité et le prouve : il annonce `ffmpeg absent` au démarrage, accepte la tâche, puis la refuse
+`VIDEO_TOOL_UNAVAILABLE` (503). Les tests, eux, désignent un **shim POSIX** (`/bin/sh` écrit par la
+suite dans un dossier temporaire) par `FFMPEG_PATH` : le processus est réellement lancé, et se
+comporte parfois mal (sortie énorme, fausse signature, blocage) — c'est l'enveloppe que nous
+contrôlons qui est vérifiée, pas le décodeur.
 
 Ce qu'il faut y voir, et qui y a été vu le 2026-10-02 (21/21 contrôles) : avec
 `video.async_probe` à `true`, la déclaration répond `201` avec `queued: true` et un rapport
@@ -55,6 +64,16 @@ le tour de worker passe la tâche en `succeeded` et **remplit le rapport** ; la 
 alors `200`, et `Range: bytes=100000-100999` rend `206` avec exactement ces mille octets ; une
 tâche `thumbnail` reste `queued` devant un worker `VIDEO_WORKER_KINDS=probe`, puis est refusée
 `VIDEO_TOOL_UNAVAILABLE` par un worker `VIDEO_WORKER_KINDS=thumbnail`.
+
+Le run de la phase C (19/19, 2026-10-02, même montage : serveur vivant + `worker:once` vivant +
+shim désigné par `FFMPEG_PATH`) ajoute : `video.tools_enabled` fermé → tâche acceptée `202` puis
+refusée `VIDEO_TOOLS_DISABLED` **et reprogrammée** (`attempts: 1`, `run_after` dans le futur, échec
+terminal à `video.max_attempts = 1`) ; capacité ouverte → vignette produite avec `width`, `atMs` et
+`maxBytes` réellement appliqués, relue en `image/png` par la route de contenu ; piste `wav` relue en
+`audio/wav` avec `magic_ok` vrai ; sortie non-image et sortie au-dessus du plafond jetées sans ligne
+`files` orpheline ; outil bloqué tué au délai (2,5 s mesurés) sans emporter le serveur ; artefact
+invisible au compte voisin (403) et à l'anonyme (401) ; refus et créations dans `audit_logs` ; et
+aucun chemin absolu dans les 19 000 octets de réponses capturées ni dans le journal du serveur.
 
 ## Harnais (`tests/helpers.js`)
 

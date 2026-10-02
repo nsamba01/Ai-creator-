@@ -13,7 +13,7 @@
  */
 import { createVideoJobsRepository } from '../repositories/video-jobs.repo.js';
 import { AppError, badRequest, forbidden, notFound } from '../utils/errors.js';
-import { redact } from '../utils/logger.js';
+import { safeMessage } from '../utils/sanitize.js';
 import { VIDEO_JOB_KINDS, VIDEO_JOB_STATUSES } from '../repositories/video-jobs.repo.js';
 
 const JOB_ERRORS = {
@@ -24,16 +24,7 @@ const JOB_ERRORS = {
   CANCELLED: 'VIDEO_CANCELLED',
 };
 
-/** Chemin, URL file://, ou fragment de pile : rien de tout cela ne sort du processus. */
-function safeMessage(err) {
-  const raw = String(err?.message ?? err ?? 'erreur inconnue').replace(/[\u0000-\u0008]/g, ' ');
-  const stripped = redact(raw)
-    .replace(/(?:file:\/\/)?(?:\/[\w.\-]+)+/g, '[chemin masqué]')
-    .replace(/[A-Za-z]:\\(?:[\w.\-\\]+)+/g, '[chemin masqué]')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return stripped.slice(0, 300) || 'erreur non nommée';
-}
+
 
 export function createVideoJobService({ db, config, settings = null, audit = null, videos = null, jobs = null } = {}) {
   const repo = jobs ?? createVideoJobsRepository(db);

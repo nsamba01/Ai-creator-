@@ -150,12 +150,17 @@ services:
       VIDEO_PROBE_TIMEOUT_MS: "${VIDEO_PROBE_TIMEOUT_MS:-10000}"
       VIDEO_USE_FFPROBE: "${VIDEO_USE_FFPROBE:-1}"
       FFPROBE_PATH: "${FFPROBE_PATH:-ffprobe}"
+      # Le décodeur n'est pas embarqué dans l'image : ce service ne peut produire vignettes et
+      # pistes qu'avec un `ffmpeg` réellement présent (image dérivée, ou montage d'un binaire).
+      # Sans lui, la capacité reste ouverte mais chaque tâche est refusée sous un code nommé.
+      FFMPEG_PATH: "${FFMPEG_PATH:-ffmpeg}"
+      VIDEO_TOOL_TIMEOUT_MS: "${VIDEO_TOOL_TIMEOUT_MS:-30000}"
     <<: *runtime-defaults
-    # Aucun réseau : un sondage local ne doit rien pouvoir contacter. Si `ffmpeg` est
-    # ajouté plus tard (phase C), le montage en lecture seule du répertoire d’entrée et
-    # un tmpfs `noexec` s’ajoutent ici — pas au service `app`.
+    # Aucun réseau : un sondage local ne doit rien pouvoir contacter. Le traitement du média
+    # (phase C) tourne ici, pas dans `app` : `read_only` + `tmpfs /tmp` en `noexec` (ancre
+    # partagée) bornent le répertoire de travail que le service de média utilise.
     network_mode: "none"
-    pids: 128
+    pids_limit: 128
     mem_limit: 512m
     cpus: "1.0"
 
