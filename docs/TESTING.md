@@ -12,7 +12,8 @@ npm run check                 # lint + tests + audit : c'est LE contrôle à pas
 npm run smoke                 # 27 contrôles contre une instance réellement en cours d'exécution
 ```
 
-`npm run check` est ce que la CI exécute (`.github/workflows/ci.yml`). Résultat mesuré le 2026-10-02 dans cet
+`npm run check` est ce que la CI exécute (workflow fourni sous `ci/github-workflows-ci.yml`, à copier dans
+`.github/workflows/ci.yml` — voir docs/DEPLOYMENT.md § 9). Résultat mesuré le 2026-10-02 dans cet
 environnement : lint `Aucun problème détecté` (sortie 0), **197 tests, 0 échec**,
 audit sans constat ouvert hors environnement connecté, smoke **27/27** sur une instance
 de production locale.

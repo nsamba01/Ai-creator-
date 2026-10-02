@@ -165,3 +165,31 @@ Résultats mesurés le 2026-10-02 dans cet environnement : `ACTION NON EXÉCUTÉ
 construction de l'image (ni `docker` ni `podman` dans le bac à sable) — voir le rapport de
 session ; la validation statique des deux fichiers (analyse YAML, `sh -n`, recherche des
 motifs) a été exécutée à la place.
+
+## 9. Chaîne d'intégration continue
+
+> **Le fichier de workflow n'est pas sous `.github/workflows/`.** Il est fourni sous
+> `ci/github-workflows-ci.yml` : le jeton de l'agent (GitHub App) n'a pas la permission
+> `workflows`, et GitHub refuse toute écriture créant ou modifiant un fichier sous
+> `.github/workflows/` sans cette permission. Pour l'activer :
+>
+>     mkdir -p .github/workflows
+>     cp ci/github-workflows-ci.yml .github/workflows/ci.yml
+>     git add .github/workflows/ci.yml && git commit -m "CI" && git push
+>
+> (ou accorder `Workflows: write` à l'application GitHub, puis relancer la commande).
+> Le contenu est vérifié localement : les mêmes étapes (`lint`, `test`, `build`, `smoke`,
+> `audit -- --strict`) passent dans cet environnement.
+
+Trois emplois : `quality` (lint, 197 tests, build Vite, instance de production réellement
+démarrée puis smoke test, audit `--strict` avec artefact JSON de 14 jours), `docker`
+(`docker compose config -q`, construction des deux cibles `production` et `test`, chaîne de
+qualité exécutée dans le conteneur de test, `up -d --build` puis smoke), `docs` (les
+commandes citées dans la documentation existent réellement, les fichiers de déploiement et
+les six fichiers de documentation sont présents, `sh -n` sur l'entrypoint).
+
+Aucun secret n'y est écrit : les valeurs sont générées par le job (`openssl rand -hex 32`),
+le mot de passe administrateur de test transite par un fichier temporaire `0600` passé à
+`--password-file` puis supprimé, et le `.env` du job Docker est créé de zéro (pas de copie
+de `.env.example` : Compose applique la dernière valeur rencontrée, un doublon rendrait le
+résultat ambigu).

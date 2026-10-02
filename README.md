@@ -143,4 +143,6 @@ réellement en mode production (`node src/server.js`, migrations + bootstrap + s
 l'interface + écoute `0.0.0.0:3000`), le smoke test a tourné contre cette instance
 (27/27), et les deux fichiers Docker ont été validés statiquement (analyse YAML avec
 résolution des ancres, `sh -n` sur l'entrypoint, recherche des motifs de durcissement).
-La CI (`.github/workflows/ci.yml`) exécute, elle, la construction et la composition réelles.
+La CI (`ci/github-workflows-ci.yml`, à copier dans `.github/workflows/ci.yml` :
+voir [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) § 9) exécute, elle, la construction et la
+composition réelles.
