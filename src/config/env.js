@@ -263,7 +263,7 @@ export function loadConfig(env = process.env, overrides = {}) {
         throw new ConfigError(`CSP_FRAME_ANCESTORS : chaque origine doit commencer par http:// ou https:// (${shaped.join(', ')}).`);
       }
       const bad = parts.filter((p) => p === '*' || p === 'https://*' || !/^[A-Za-z0-9.*_:/+-]+$/.test(p));
-      if (bad.length) throw new ConfigError(` CSP_FRAME_ANCESTORS refusé (${bad.join(', ')}) : aucun joker global, aucun caractère inattendu.`);
+      if (bad.length) throw new ConfigError(`CSP_FRAME_ANCESTORS refusé (${bad.join(', ')}) : aucun joker global, aucun caractère inattendu.`);
       return parts;
     })(),
 
