@@ -61,7 +61,7 @@ src/
 client/         SPA React (13 pages) : api.js, auth.jsx (contexte), router.js, ui.jsx, styles.css
 scripts/        lint.js (portique statique), smoke-test.js, security-audit.js, bootstrap-admin.js,
               video-worker.js (processus de traitement, séparé du serveur web)
-tests/          13 fichiers, 271 tests (37 suites), harnais commun (helpers.js)
+tests/          13 fichiers, 274 tests (38 suites), harnais commun (helpers.js)
 docker/         entrypoint.sh
 ```
 

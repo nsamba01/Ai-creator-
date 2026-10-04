@@ -200,7 +200,7 @@ déploiement qui n'a pas besoin d'être encadré ne pose rien et garde le refus.
 | Outil | Rôle |
 |---|---|
 | `node scripts/lint.js` | syntaxe de tout le JS, import réel de 26 modules, motifs de secrets, primitives dangereuses, `console.*` dans `src/`, interpolation SQL, cohérence `.env.example` ↔ `process.env` utilisé, garde anti-`DROP` dans les migrations |
-| `npm test` | 271 tests répartis sur 13 fichiers (37 suites), exécutés contre une vraie instance en mémoire/dossier temporaire — dont une exécution réelle d'un processus externe via un shim POSIX |
+| `npm test` | 274 tests répartis sur 13 fichiers (38 suites), exécutés contre une vraie instance en mémoire/dossier temporaire — dont une exécution réelle d'un processus externe via un shim POSIX |
 | `node scripts/security-audit.js` | secrets dans le dépôt et l'index Git, permissions des fichiers de secrets, gardes de configuration (exécution réelle de `loadConfig`), Docker (root, `:latest`, `no-new-privileges`), `npm audit` production |
 | `node scripts/smoke-test.js` | 42 contrôles sur une **instance en cours d'exécution** : en-têtes, 401/403/404, CSRF opposable, changement de mot de passe forcé, SSRF, bouclage refusé, révocation après déconnexion, SPA et bundle |
 

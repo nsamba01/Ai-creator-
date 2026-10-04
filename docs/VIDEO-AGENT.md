@@ -408,6 +408,13 @@ c'est une propriété du processus, pas une décision métier.
   reproche, audit de sécurité sur **120 fichiers** de l'arbre suivi (121 avec un `.env` local), 0 constat, `npm audit` 0 vulnérabilité ;
   `npm run smoke` sur instance fraîche : **42 contrôles OK, 0 échec, 0 non exécuté** ;
   `npx vite build` : 18 fichiers JSX compilés.
+* Nouvelle mesure le 2026-10-04, après les durcissements d’en-têtes et la porte 401 sur
+  `POST /api/auth/change-password` : `npm run check` à 0 (274 tests, 38 suites, audit sans
+  constat), `npm run smoke` **40/40** sur une instance fraîche aux réglages durcis, et parcours
+  de mise en service **37/37** (détail dans docs/TESTING.md). Le fichier de workflow reste
+  à copier sous `.github/workflows/ci.yml` : la tentative a été poussée le 2026-10-04 et
+  GitHub l'a refusée (`refusing to allow a GitHub App to create or update workflow
+  .github/workflows/ci.yml without workflows permission`).
 * Deux défauts que seuls ces tests ont trouvés, et qui sont donc écrits dans le code plutôt que
   dans un commentaire : `jobInput` n'était pas **idempotent** (un appel direct perdait `width` et
   retombait sur le réglage, sans erreur nulle part), et le worker **filtrait** le résultat du

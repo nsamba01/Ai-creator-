@@ -13,9 +13,9 @@ printf 'SESSION_SECRET=%s\nSTATE_SECRET=%s\n' "$(openssl rand -hex 32)" "$(opens
 # avec le mot de passe écrit dans le volume, puis le change immédiatement
 docker compose up -d --build
 docker compose logs -f app
-docker compose --profile smoke run --rm smoke     # les contrôles de `npm run smoke` (42 avec identifiants) contre l'instance réelle
+docker compose --profile smoke run --rm smoke     # les contrôles de `npm run smoke` contre l'instance réelle (42 sur une instance aux réglages par défaut ; moins quand des capacités sont déjà activées, le script n'exécute pas ce qui ne s'applique pas)
 docker compose port app 3000                       # vérifie l'adresse publiée
-docker compose --profile test run --rm test       # lint + 271 tests + audit de sécurité
+docker compose --profile test run --rm test       # lint + 274 tests + audit de sécurité
 ```
 
 Arrêt, nettoyage, mise à jour :
@@ -202,10 +202,17 @@ motifs) a été exécutée à la place.
 
 ## 9. Chaîne d'intégration continue
 
-> **Le fichier de workflow n'est pas sous `.github/workflows/`.** Il est fourni sous
-> `ci/github-workflows-ci.yml` : le jeton de l'agent (GitHub App) n'a pas la permission
-> `workflows`, et GitHub refuse toute écriture créant ou modifiant un fichier sous
-> `.github/workflows/` sans cette permission. Pour l'activer :
+> **Le fichier de workflow n'est pas sous `.github/workflows/`, et ce n'est pas un oubli.**
+> Il est fourni sous `ci/github-workflows-ci.yml` : le jeton de l'agent (GitHub App) n'a pas
+> la permission `workflows`, et GitHub refuse toute écriture créant ou modifiant un fichier
+> sous `.github/workflows/` sans cette permission. Mesuré le 2026-10-04, le refus exact du
+> dépôt distant :
+>
+>     ! [remote rejected] refusing to allow a GitHub App to create or update workflow
+>       `.github/workflows/ci.yml` without `workflows` permission
+>
+> Pour l'activer, avec un jeton qui possède cette permission (ou depuis votre propre
+> compte) :
 >
 >     mkdir -p .github/workflows
 >     cp ci/github-workflows-ci.yml .github/workflows/ci.yml
@@ -215,7 +222,7 @@ motifs) a été exécutée à la place.
 > Le contenu est vérifié localement : les mêmes étapes (`lint`, `test`, `build`, `smoke`,
 > `audit -- --strict`) passent dans cet environnement.
 
-Trois emplois : `quality` (lint, 271 tests, build Vite, instance de production réellement
+Trois emplois : `quality` (lint, 274 tests, build Vite, instance de production réellement
 démarrée puis smoke test, audit `--strict` avec artefact JSON de 14 jours), `docker`
 (`docker compose config -q`, construction des deux cibles `production` et `test`, chaîne de
 qualité exécutée dans le conteneur de test, `up -d --build` puis smoke), `docs` (les

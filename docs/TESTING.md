@@ -3,7 +3,7 @@
 ## Commandes
 
 ```bash
-npm test                      # 271 tests, 37 suites, une seule file (--test-concurrency=1)
+npm test                      # 274 tests, 38 suites, une seule file (--test-concurrency=1)
 npm run test:one -- tests/rbac.test.js   # un seul fichier de suite
 npm run lint                  # portique statique maison (aucune dépendance externe)
 npm run audit                 # audit de sécurité (secrets, index Git, config, Docker, npm audit)
@@ -13,11 +13,21 @@ npm run smoke                 # 42 contrôles contre une instance réellement en
 ```
 
 `npm run check` est ce que la CI exécute (workflow fourni sous `ci/github-workflows-ci.yml`, à copier dans
-`.github/workflows/ci.yml` — voir docs/DEPLOYMENT.md § 9). Résultat mesuré le 2026-10-02 dans cet
+`.github/workflows/ci.yml` — voir docs/DEPLOYMENT.md § 9). Résultat mesuré le 2026-10-04 dans cet
 environnement : lint `Aucun problème détecté` (sortie 0, 7 dérogations `lint-allow` comptées),
-**271 tests, 0 échec** (37 suites), audit de sécurité sur 120 fichiers de l'arbre suivi — 121
-quand un `.env` local est présent — sans constat ouvert hors environnement connecté, et smoke
-**42/42** sur une instance de production locale.
+**274 tests, 0 échec** (38 suites), audit de sécurité : **121 fichiers passés en revue, 0 constat**
+(le compte suit l'arbre suivi, `.env` local compté en plus), et smoke contre une instance de
+production locale : **40/40** sur une instance fraîche aux réglages durcis — le nombre de contrôles
+Applicables varie avec l'état de l'instance (42 quand les capacités vidéo sont éteintes).
+
+Un second parcours, écrit pour la vérification de mise en service (serveur vivant, base fraîche,
+`VIDEO_WORKER_KINDS=probe,thumbnail`, `FFMPEG_PATH` désignant un binaire absent) : **37 contrôles sur
+37** — déduplication par empreinte (200 plutôt qu'un second objet), refus à la matière (415) d'un
+PNG renommé `.mp4`, refus nommé (409) avant l'allumage du réglage, sondage réel depuis les en-têtes
+ISO BMFF (`ready`, `source=header`, 1280x720 relevés sur un fichier de démonstration), enregistrement
+idempotent, `Range` en 206 à l'octet près, quarantaine coupant tout octet servi, temporisation de la
+file opposable (réclamer trop tôt ne consomme pas de tentative), échec nommé `VIDEO_TOOL_UNAVAILABLE`
+puis terminal à `video.max_attempts = 1`, et aucun artefact produit par les passes échouées.
 
 ## Ce que couvre chaque suite
 

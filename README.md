@@ -5,7 +5,7 @@ d'administration React, contrôle d'accès par rôles et permissions, gestion de
 fichiers et d'agents, conteneurisée et tenue par une chaîne de qualité
 automatisée. Pensée pour tourner sur un seul serveur, sans service externe.
 
-> **État vérifié le 2026-10-02** : `npm run lint` sort 0 problème · **271 tests, 0 échec** ·
+> **État vérifié le 2026-10-04** : `npm run lint` sort 0 problème · **274 tests, 0 échec** ·
 > **42/42** contrôles de smoke test sur une instance de production réellement démarrée ·
 > audit de sécurité sur 120 fichiers de l'arbre suivi, 0 constat. L'agent vidéo est **implémenté sur ses trois
 > premières phases** (déclaration et sondage, lecture par tranches et file sous bail, vignettes et
@@ -32,7 +32,7 @@ Contrôles disponibles immédiatement :
 
 ```bash
 docker compose --profile smoke run --rm smoke    # smoke test contre l'instance montée par la composition
-docker compose --profile test  run --rm test     # lint + 271 tests + audit de sécurité
+docker compose --profile test  run --rm test     # lint + 274 tests + audit de sécurité
 ```
 
 ## Démarrage sans Docker
@@ -86,7 +86,7 @@ de fuite : [docs/SECURITY-POLICY.md](docs/SECURITY-POLICY.md).
 |---|---|
 | `npm start` / `npm run dev` | serveur (avec `--watch` en dev) |
 | `npm run build` | build Vite de l'interface vers `dist/` |
-| `npm test` | 271 tests, 37 suites (`node --test`, une file) |
+| `npm test` | 274 tests, 38 suites (`node --test`, une file) |
 | `npm run lint` | portique statique maison (syntaxe, imports, motifs de secret, cohérence `.env.example`) |
 | `npm run audit` | audit de sécurité (ajoutez `-- --strict` pour un code de sortie utile en CI) |
 | `npm run smoke` | 42 contrôles contre une instance en cours d'exécution (`SMOKE_BASE_URL`, `SMOKE_EMAIL`, `SMOKE_PASSWORD` ou `SMOKE_PASSWORD_FILE`) |
@@ -127,7 +127,7 @@ ou l'inverse. Trois points à ne pas manquer :
 ```
 src/{config,db,repositories,services,middleware,routes,utils}   serveur applicatif (10 907 lignes)
 client/                                                          SPA React 18, 13 pages (3 178 lignes)
-tests/                                                           13 fichiers, 271 tests, harnais commun (4 688 lignes)
+tests/                                                           13 fichiers, 274 tests, harnais commun (4 744 lignes)
 scripts/                                                         lint, smoke test, audit de sécurité, bootstrap admin, worker vidéo (1 129 lignes)
 docker/entrypoint.sh                                             préparation du volume, secrets 0600, migrations
 Dockerfile · docker-compose.yml                                  image multi-étapes non root, composition durcie
@@ -156,5 +156,5 @@ l'interface + écoute `0.0.0.0:3000`), le smoke test a tourné contre cette inst
 (40/40), et les deux fichiers Docker ont été validés statiquement (analyse YAML avec
 résolution des ancres, `sh -n` sur l'entrypoint, recherche des motifs de durcissement).
 La CI (`ci/github-workflows-ci.yml`, à copier dans `.github/workflows/ci.yml` :
-voir [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) § 9) exécute, elle, la construction et la
-composition réelles.
+voir [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) § 9 — l'écriture de ce chemin est refusée
+au jeton d'agent) exécute, elle, la construction et la composition réelles.
