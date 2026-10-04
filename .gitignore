@@ -18,6 +18,7 @@ secrets/
 **/.session-secret
 
 # --- Runtime data (DB, uploads, generated outbox) ---
+!data/
 data/
 *.db
 *.db-wal
