@@ -19,7 +19,7 @@ secrets/
 
 # --- Runtime data (DB, uploads, generated outbox) ---
 !data/
-data/
+data/**
 *.db
 *.db-wal
 *.db-shm
