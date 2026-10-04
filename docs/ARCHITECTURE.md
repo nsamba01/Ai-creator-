@@ -68,7 +68,8 @@ docker/         entrypoint.sh
 ## Cycle de vie d'une requête authentifiée
 
 1. `request-context` : identifiant de corrélation, IP **hachée** (HMAC), user-agent **haché**, chemin stable.
-2. `security-headers` puis `helmet` (CSP, `frame-ancestors 'none'`, HSTS si TLS, `nosniff`).
+2. `security-headers` puis `helmet` (CSP, `frame-ancestors 'none'` sauf si
+   `CSP_FRAME_ANCESTORS` nomme des origines précises, HSTS si TLS, `nosniff`).
 3. Limiteur de débit : buckets en mémoire, clés `<ipHash>|<route>`, limites `config.limits.*`.
 4. `authenticate` : lecture du cookie `ps_session` → empreinte → `sessions` → expiration/réévocation →
    `req.user` (identités + permissions, cache RBAC 15 s).

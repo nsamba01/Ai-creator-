@@ -251,6 +251,22 @@ export function loadConfig(env = process.env, overrides = {}) {
       allowedOrigins: new Set(list(env.CORS_ALLOWED_ORIGINS, ['http://localhost:3000', 'http://127.0.0.1:3000'])),
     },
 
+    // Encadrement de la page (iframe). Le refus est le défaut, et il n'existe aucun
+    // « allow all » : une liste d'origines complètes avec schéma, ou rien.
+    frameAncestors: (() => {
+      const raw = String(env.CSP_FRAME_ANCESTORS ?? '').trim();
+      if (!raw || raw === "'none'" || raw.toLowerCase() === 'none') return [];
+      const parts = raw.split(/[\s,]+/).filter(Boolean);
+      if (!parts.length) return [];
+      const shaped = parts.filter((p) => !/^https?:\/\//.test(p));
+      if (shaped.length) {
+        throw new ConfigError(`CSP_FRAME_ANCESTORS : chaque origine doit commencer par http:// ou https:// (${shaped.join(', ')}).`);
+      }
+      const bad = parts.filter((p) => p === '*' || p === 'https://*' || !/^[A-Za-z0-9.*_:/+-]+$/.test(p));
+      if (bad.length) throw new ConfigError(` CSP_FRAME_ANCESTORS refusé (${bad.join(', ')}) : aucun joker global, aucun caractère inattendu.`);
+      return parts;
+    })(),
+
     bodyLimit: (() => {
       const raw = String(env.JSON_BODY_LIMIT ?? '1mb').trim().toLowerCase();
       const mult = raw.endsWith('kb') ? 1024 : raw.endsWith('mb') ? 1024 * 1024 : 1;
@@ -298,6 +314,7 @@ export function loadConfig(env = process.env, overrides = {}) {
     video: Object.freeze(cfg.video),
     url: Object.freeze({ ...cfg.url, allowedPorts: cfg.url.allowedPorts }),
     cors: Object.freeze({ allowedOrigins: cfg.cors.allowedOrigins }),
+    frameAncestors: Object.freeze(cfg.frameAncestors),
     secrets: Object.freeze(cfg.secrets),
   });
 }

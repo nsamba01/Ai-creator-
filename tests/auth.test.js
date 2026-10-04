@@ -185,6 +185,20 @@ describe('authentification', () => {
     assert.equal(relogin.status, 401, 'l’ancien mot de passe ne fonctionne plus');
   });
 
+  it('refuse un changement de mot de passe anonyme par un 401 net (pas un 500)', async () => {
+    // Sans session, la route doit rendre 401 *avant* d’atteindre le service : le
+    // gestionnaire lit req.user.id, et un appel anonyme y produisait une erreur non
+    // gérée (500). Aucun état n’était modifié, mais la réponse doit rester propre.
+    const anon = await ctx.client().post('/api/auth/change-password', {
+      currentPassword: 'peu-importe',
+      newPassword: 'Tentative-Anonyme-2026!',
+      confirm: 'Tentative-Anonyme-2026!',
+    });
+    assert.equal(anon.status, 401, `401 attendu, reçu ${anon.status} ${JSON.stringify(anon.body)}`);
+    assert.equal(anon.body?.error?.code, 'UNAUTHENTICATED');
+    assert.ok(!/interne|stack|undefined/i.test(JSON.stringify(anon.body)), 'aucune fuite technique dans la réponse');
+  });
+
   it('verrouille le compte après N échecs (anti brute-force)', async () => {
     const db = ctx.runtime.db;
     const { hashPassword } = await import('../src/services/password.service.js');

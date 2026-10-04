@@ -77,6 +77,7 @@ export async function startServer({ configOverride = null, useDotenv = true } = 
     // « csrf », « secret »…), ce qui est voulu pour les données utilisateur
     // mais rendrait inutilisable un journal de démarrage. Ici aucune valeur
     // sensible n'est transportée, seulement des booléens et des politiques.
+    framing: config.frameAncestors?.length ? `autorisée pour ${config.frameAncestors.join(' ')}` : 'refusée (X-Frame-Options: DENY)',
     browserGuards: { doubleSubmit: config.csrfEnabled, secureFlag: config.cookies.secure, sameSite: config.cookies.sameSite },
     sessionTtlMinutes: Math.round(config.session.ttlMs / 60000),
     keyOrigin: config.secrets.session.source,

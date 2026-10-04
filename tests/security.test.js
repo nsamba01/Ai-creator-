@@ -14,6 +14,7 @@ import { after, before, describe, it } from 'node:test';
 import { boot } from './helpers.js';
 import { redact } from '../src/utils/logger.js';
 import { loadDotenv, parseDotenv } from '../src/config/dotenv.js';
+import { loadConfig } from '../src/config/env.js';
 import { addLogSink } from '../src/utils/logger.js';
 
 const ADMIN = { id: 'admin@test.local', password: 'Sup3r-Secret-Initial!' };
@@ -82,6 +83,41 @@ describe('en-têtes et protection navigateur', () => {
     await c.post('/api/agents/tasks', { title: 'tentative', agentRole: 'qa' });
     const after = ctx.runtime.db.get(`SELECT count(*) AS c FROM audit_logs WHERE action='security.csrf.failure'`).c;
     assert.equal(after, before + 1);
+  });
+});
+
+describe('encadrement de la page (frame-ancestors)', () => {
+  const BASE = { NODE_ENV: 'production', SESSION_SECRET: 'a'.repeat(48), STATE_SECRET: 'b'.repeat(48) };
+
+  it('refuse un joker global et une origine sans schéma : la config ne démarre pas', () => {
+    for (const bad of ['*', 'https://*', 'embed.example.test', 'https://embed.example.test ; note']) {
+      assert.throws(
+        () => loadConfig({ ...BASE, CSP_FRAME_ANCESTORS: bad }),
+        /CSP_FRAME_ANCESTORS/,
+        `valeur acceptée à tort : ${bad}`,
+      );
+    }
+    assert.deepEqual(loadConfig({ ...BASE, CSP_FRAME_ANCESTORS: '' }).frameAncestors, [], 'rien de demandé = encadrement refusé');
+    assert.deepEqual(
+      loadConfig({ ...BASE, CSP_FRAME_ANCESTORS: 'https://embed.example.test, https://autre.example.test' }).frameAncestors,
+      ['https://embed.example.test', 'https://autre.example.test'],
+      'liste séparée par virgules ou espaces, les deux lisibles',
+    );
+  });
+
+  it("relâche l'ancêtre demandé et retire X-Frame-Options, qui masquerait la CSP", async () => {
+    const ctx = await boot({ extraConfig: { CSP_FRAME_ANCESTORS: 'https://embed.example.test' } });
+    try {
+      const res = await fetch(`${ctx.base}/api/meta`);
+      const csp = res.headers.get('content-security-policy');
+      assert.match(csp, /frame-ancestors https:\/\/embed\.example\.test/);
+      assert.ok(!/frame-ancestors 'none'/.test(csp), 'le défaut est remplacé, pas additionné');
+      assert.equal(res.headers.get('x-frame-options'), null, 'X-Frame-Options retiré, sinon il gagnerait sur la CSP');
+      const page = await fetch(`${ctx.base}/`);
+      assert.match(page.headers.get('content-security-policy'), /frame-ancestors https:\/\/embed\.example\.test/, 'la page elle-même, pas seulement l’API');
+    } finally {
+      await ctx.close();
+    }
   });
 });
 
@@ -353,6 +389,12 @@ describe('chargement de la configuration locale (.env)', () => {
       assert.equal(env.AVEC_ESPACES, 'avec espaces', 'les guillemets sont retirés');
       assert.equal(env.mauvaise, undefined, 'une ligne non conforme est ignorée');
       assert.ok(res.loaded.includes('MAX_UPLOAD_MB') && res.skipped.includes('SESSION_SECRET'));
+      // Une variable exportée **vide** compte comme non posée : la valeur du fichier
+      // s’applique. Règle assumée (elle évite qu’un `FOO=` perdu dans un shell éteigne
+      // silencieusement une protection), donc épinglée ici.
+      const envVide = { MAX_UPLOAD_MB: '', NODE_ENV: 'test' };
+      loadDotenv({ root: dir, env: envVide });
+      assert.equal(envVide.MAX_UPLOAD_MB, '1', 'une variable vide est remplacée par la valeur du fichier');
       assert.equal(res.file, path.join(dir, '.env'));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

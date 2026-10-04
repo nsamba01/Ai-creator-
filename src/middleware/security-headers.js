@@ -7,6 +7,9 @@ import helmet from 'helmet';
 
 export function createSecurityHeaders(config) {
   const isProd = config.isProd;
+  // Une liste d'ancêtres n'est jamais un blanc-seing : elle remplace 'none' dans la CSP **et**
+  // retire X-Frame-Options, sinon l'en-tête hérité annulerait silencieusement la directive CSP.
+  const allowFrames = Array.isArray(config?.frameAncestors) ? config.frameAncestors : [];
   const cspDirectives = {
     defaultSrc: ["'self'"],
     baseUri: ["'none'"],
@@ -19,7 +22,7 @@ export function createSecurityHeaders(config) {
     objectSrc: ["'none'"],
     frameSrc: ["'none'"],
     formAction: ["'self'"],
-    frameAncestors: ["'none'"],
+    frameAncestors: allowFrames.length ? allowFrames : ["'none'"],
     mediaSrc: ["'self'", 'blob:'],
     workerSrc: ["'self'", 'blob:'],
     upgradeInsecureRequests: isProd ? [] : null,
@@ -35,7 +38,7 @@ export function createSecurityHeaders(config) {
       hidePoweredBy: true,
       noSniff: true,
       xssFilter: true,
-      frameguard: { action: 'deny' },
+      frameguard: allowFrames.length ? false : { action: 'deny' },
       ieNoOpen: true,
       originAgentCluster: true,
       permittedCrossDomainPolicies: { permittedPolicies: 'none' },
@@ -46,7 +49,7 @@ export function createSecurityHeaders(config) {
     }),
     function extraHeaders(req, res, next) {
       res.setHeader('X-Content-Type-Options', 'nosniff');
-      res.setHeader('X-Frame-Options', 'DENY');
+      if (!allowFrames.length) res.setHeader('X-Frame-Options', 'DENY');
       res.setHeader('Referrer-Policy', 'no-referrer');
       res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), interest-cohort=(), browsing-topics=()');
       res.setHeader('X-DNS-Prefetch-Control', 'off');

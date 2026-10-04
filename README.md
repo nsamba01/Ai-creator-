@@ -71,6 +71,8 @@ sont en JSON sur la sortie standard (réduction automatique des valeurs sensible
   et du dépôt ; IP et user-agent conservés uniquement sous forme d'empreintes HMAC.
 * CSP restrictive, `frame-ancestors 'none'`, HSTS sous TLS, `X-Content-Type-Options`,
   `Referrer-Policy`, `Permissions-Policy` ; aucun `dangerouslySetInnerHTML` dans le SPA.
+  L'encadrement en iframe est refusé par défaut ; `CSP_FRAME_ANCESTORS` permet de
+  l'autoriser pour une liste fermée d'origines (consoles ou aperçus délégués).
 * Toute configuration dangereuse en production est un **échec de démarrage** (code 78),
   pas un avertissement.
 

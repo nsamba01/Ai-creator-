@@ -152,6 +152,17 @@ données utilisateur (noms, résumés de documents, motifs d'erreur) sont rendue
 texte, donc une charge utile `<img onerror=…>` téléversée ou saisie reste inerte
 (`tests/security.test.js` vérifie les deux bouts : stockage brut + rendu échappé).
 
+**Encadrement en iframe.** Par défaut rien n'est autorisé : `X-Frame-Options: DENY` et
+`frame-ancestors 'none'`. Une console d'exploitation ou un aperçu délégué qui doit encadrer
+l'application le fait en nommant ses origines dans `CSP_FRAME_ANCESTORS`
+(`https://console.example.org`, ou un préfixe de domaine `https://*.example.org` ; les
+origines se séparent par espaces ou par virgules). Cette liste est validée au chargement
+de la configuration — schéma obligatoire, aucun joker global, sinon l'application refuse
+de démarrer ; elle remplace
+`frame-ancestors 'none'` et retire `X-Frame-Options`, sans toucher à aucune autre
+directive. La tolérance est annoncée dans le journal de démarrage (`framing:`) : un
+déploiement qui n'a pas besoin d'être encadré ne pose rien et garde le refus.
+
 ## 7. Journaux et audit
 
 * Réduction automatique à l'émission : toute clé évoquant un secret
@@ -177,7 +188,10 @@ texte, donc une charge utile `<img onerror=…>` téléversée ou saisie reste i
 * Les secrets générés sont écrits `0600` dans le volume (`DATA_DIR/.secret-*`) et ne sont
   jamais affichés ; le fichier de mot de passe administrateur généré obéit à la même règle et
   doit être lu puis supprimé.
-* Le chargeur `.env` (`src/config/dotenv.js`) est borné : il ne remplace jamais l'environnement du processus, refuse un
+* Le chargeur `.env` (`src/config/dotenv.js`) est borné : il ne remplace jamais une variable déjà posée par
+  l'environnement du processus — une variable **exportée vide** (`FOO=`) est toutefois considérée comme non
+  posée et reçoit la valeur du fichier, ce qui permet d'éteindre une option en écrivant explicitement sa
+  valeur de refus (`COOKIE_SECURE=0`) plutôt qu'en la vidant ; il refuse un
   lien symbolique ou un chemin hors du projet, ignore les lignes invalides et ne journalise
   aucune valeur.
 

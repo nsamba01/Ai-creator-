@@ -19,7 +19,8 @@ import { hashPassword } from '../services/password.service.js';
 
 export function createAuthRoutes(runtime) {
   const router = Router();
-  const { config, auth, db, audit, rbac, rateLimit, settings } = runtime;
+  const { config, auth, db, audit, rbac, rateLimit, settings, middlewares } = runtime;
+  const { requireAuth } = middlewares;
 
   const cookieBase = {
     path: '/',
@@ -144,6 +145,10 @@ export function createAuthRoutes(runtime) {
 
   router.post(
     '/change-password',
+    // requireAuth is mandatory here: the handler reads req.user.id. Without it,
+    // an anonymous call used to reach the service and surface as a 500 instead of
+    // a clean 401 (no state is ever changed, but the contract must be explicit).
+    requireAuth,
     noStore,
     validateBody({
       currentPassword: S.password({ min: 1, max: 256, label: 'mot de passe actuel' }),
