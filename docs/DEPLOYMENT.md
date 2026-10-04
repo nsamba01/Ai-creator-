@@ -129,6 +129,30 @@ refus), **dernier administrateur verrouillé** (refus), mot de passe non conform
 politique (refus et aucun compte créé), mot de passe par défaut (refus et le compte est
 marqué pour changement immédiat).
 
+### 4.1 Reprendre la main sur le compte administrateur
+
+Si le mot de passe n’est plus connu (environnement recréé, base restaurée, mot de passe
+partagé puis perdu), la reprise passe par le script, pas par une réinitialisation « par email » :
+
+```bash
+npm run admin:bootstrap -- --rotate        # équivaut à: node scripts/bootstrap-admin.js --rotate
+cat data/bootstrap-admin-password          # le mot de passe provisoire, 0600 — le seul endroit où il est écrit
+# connexion avec ce provisoire, puis changement immédiat (le compte est marqué must_change_password)
+rm data/bootstrap-admin-password           # le script le laisse exprès : à supprimer après lecture
+```
+
+`--rotate` régénère un mot de passe fort, révoque **toutes** les sessions du compte, remet
+`failed_login_attempts` à zéro et déverrouille le compte (`locked_until = NULL`) — c’est aussi le
+geste qui débloque un administrateur après `LOGIN_MAX_ATTEMPTS` échecs. Il ne prend **pas** un mot
+de passe choisi en argument : un mot de passe voulu se pose après connexion, par l’interface
+(Profil → Mot de passe) ou par `POST /api/auth/change-password` ; `--password-file` ne vaut que pour
+une **création** (le compte existant n’est jamais écrasé par le script).
+
+La route `POST /api/auth/password-reset/request` existe et ne révèle pas l’existence du compte
+(réponse `202` identique dans tous les cas) ; le jeton d’usage unique qu’elle émet n’est renvoyé dans
+la réponse **qu’hors production**, et aucune expédition d’e-mail n’est configurée. L’interface, elle,
+ne propose pas d’écran « mot de passe oublié » : en production, `--rotate` est la voie de recours.
+
 ## 5. Sauvegarde et restauration
 
 ```bash
