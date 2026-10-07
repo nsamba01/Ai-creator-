@@ -5,9 +5,13 @@ d'administration React, contrôle d'accès par rôles et permissions, gestion de
 fichiers et d'agents, conteneurisée et tenue par une chaîne de qualité
 automatisée. Pensée pour tourner sur un seul serveur, sans service externe.
 
-> **État vérifié le 2026-10-04** : `npm run lint` sort 0 problème · **274 tests, 0 échec** ·
-> **42/42** contrôles de smoke test sur une instance de production réellement démarrée ·
-> audit de sécurité sur 120 fichiers de l'arbre suivi, 0 constat. L'agent vidéo est **implémenté sur ses trois
+> **État vérifié le 2026-10-07** : `npm run lint` sort 0 problème · **274 tests, 0 échec** ·
+> **42/42** contrôles de smoke test sur une instance de production réellement démarrée (posture par
+> défaut, cadrage iframe refusé) et **40/40** sur l'instance encadrée pour un aperçu délégué ·
+> audit de sécurité sur 121 fichiers de l'arbre suivi, 0 constat ·
+> `git status --ignored` réduit à `.env`, `data/`, `dist/`, `node_modules/`.
+>
+> L'agent vidéo est **implémenté sur ses trois
 > premières phases** (déclaration et sondage, lecture par tranches et file sous bail, vignettes et
 > pistes audio produites par le worker) ; la transcription et le transcodage ne sont pas écrits et
 > sont refusés par un code d'erreur nommé, jamais simulés. Le détail des commandes et des limites est

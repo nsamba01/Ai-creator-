@@ -9,8 +9,12 @@ npm run lint                  # portique statique maison (aucune dépendance ext
 npm run audit                 # audit de sécurité (secrets, index Git, config, Docker, npm audit)
 npm run build                 # build Vite de l'interface (nécessaire pour que / serve la SPA)
 npm run check                 # lint + tests + audit : c'est LE contrôle à passer avant de committer
-npm run smoke                 # 42 contrôles contre une instance réellement en cours d'exécution
+npm run smoke                 # 40 à 42 contrôles contre une instance réellement en cours d'exécution
 ```
+
+Le nombre de contrôles varie avec l'état du compte de test (un compte en changement de mot de
+passe forcé ajoute deux vérifications) et le contrôle `X-Frame-Options` s'adapte à la posture de
+cadrage déclarée par `CSP_FRAME_ANCESTORS` (voir docs/SECURITY.md § 6).
 
 `npm run check` est ce que la CI exécute (workflow fourni sous `ci/github-workflows-ci.yml`, à copier dans
 `.github/workflows/ci.yml` — voir docs/DEPLOYMENT.md § 9). Résultat mesuré le 2026-10-04 dans cet

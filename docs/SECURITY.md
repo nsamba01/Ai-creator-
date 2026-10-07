@@ -163,6 +163,12 @@ de démarrer ; elle remplace
 directive. La tolérance est annoncée dans le journal de démarrage (`framing:`) : un
 déploiement qui n'a pas besoin d'être encadré ne pose rien et garde le refus.
 
+Le smoke test (`npm run smoke`) contrôle la posture réellement déclarée plutôt qu'une valeur
+figée : quand `frame-ancestors` porte une liste explicite d'origines, il exige l'**absence** de
+`X-Frame-Options` (les deux en-têtes se contrediraient) et affiche le motif ; sinon il exige
+`DENY` ou `SAMEORIGIN`. Une liste ouverte (`*`) n'est jamais acceptée, et la configuration refuse
+déjà de démarrer avec un tel joker.
+
 ## 7. Journaux et audit
 
 * Réduction automatique à l'émission : toute clé évoquant un secret

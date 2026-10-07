@@ -130,16 +130,31 @@ async function main() {
   else bad('GET /api/meta', String(meta.status));
 
   section('En-têtes de sécurité');
-  for (const [name, re] of [
+  // Clickjacking : le cadrage se pilote soit par X-Frame-Options, soit par
+  // « frame-ancestors » du CSP — jamais les deux quand l’un autorise et que
+  // l’autre refuse. Un déploiement destiné à être encadré (CSP_FRAME_ANCESTORS
+  // renseigné avec une liste explicite, par exemple un aperçu d’environnement
+  // isolé) doit donc avoir X-Frame-Options ABSENT : c’est la posture choisie,
+  // pas une régression. Sans liste explicite, X-Frame-Options reste exigé, et
+  // une liste ouverte (`*`) n’est jamais acceptée.
+  const cspValue = health.headers.get('content-security-policy') ?? '';
+  const ancestors = (cspValue.match(/frame-ancestors[^;]*/) ?? [''])[0].trim();
+  const ancestorList = ancestors.replace(/^frame-ancestors\s*/, '').trim().split(/\s+/).filter(Boolean);
+  const framedByCsp = ancestorList.length > 0 && ancestorList[0] !== "'none'" && !ancestorList.includes('*');
+  const framingCheck = (v) => (framedByCsp ? !v : Boolean(v && /DENY|SAMEORIGIN/.test(v)));
+  for (const [name, re, custom] of [
     ['Content-Security-Policy', /default-src/],
     ['X-Content-Type-Options', /nosniff/],
-    ['X-Frame-Options', /DENY|SAMEORIGIN/],
+    ['X-Frame-Options', /DENY|SAMEORIGIN/, framingCheck],
     ['Referrer-Policy', /no-referrer|same-origin/],
     ['Permissions-Policy', /microphone|geolocation/],
   ]) {
     const v = health.headers.get(name.toLowerCase());
-    if (v && re.test(v)) ok(name, v.length > 60 ? `${v.slice(0, 57)}…` : v);
-    else bad(name, v ? `valeur inattendue : ${v.slice(0, 60)}` : 'absent');
+    if (custom ? custom(v) : Boolean(v && re.test(v))) {
+      ok(name, v ? (v.length > 60 ? `${v.slice(0, 57)}…` : v) : `absent — cadrage délégué au CSP (${ancestors})`);
+    } else {
+      bad(name, v ? `valeur inattendue : ${v.slice(0, 60)}` : 'absent');
+    }
   }
 
   section('Authentification et autorisation');
