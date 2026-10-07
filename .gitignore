@@ -32,11 +32,11 @@ secrets/
 # Everything under data/ is produced by a running instance: the SQLite base
 # and its journals, uploaded media, the temporary admin password, generated
 # .secret-* files. Nothing there is source, so the whole directory is excluded.
-# `data/` is deliberately written as one exact line (measured with the repository's Git, 2.39):
-#  - it is what `npm run lint` requires (scripts/lint.js checks that `.gitignore`
-#    contains the lines .env, data/, *.db, node_modules/);
-#  - pruning the directory is the strongest form: no pattern can re-include
-#    anything under it, so a loosened rule can never expose the base or a key.
+# `data/` is deliberately one exact line (verified with this repository's Git 2.39):
+#  - `scripts/lint.js` requires the lines .env, data/, *.db, node_modules/ here,
+#    so `npm run lint`, `npm run check` and CI stay green only if it is present;
+#  - pruning the whole directory is also the strongest form: no pattern can
+#    re-include anything under it, so a loosened rule cannot expose the base.
 # A file that genuinely has to live in data/ (none exists today) is then added
 # explicitly and only after a secret review:
 #     git check-ignore -v data/<chemin>   # which rule blocks it
