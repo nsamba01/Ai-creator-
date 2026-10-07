@@ -1,0 +1,92 @@
+# ---------------------------------------------------------------------------
+# PrinceNsamba AI - Git ignore policy
+# Nothing generated, nothing secret; everything the project needs to be built,
+# tested and run stays versioned. Audited rule by rule: `git ls-files -i -c
+# --exclude-standard` is empty (no tracked file collides with a rule) and no
+# source, migration, script, test, doc or config file is matched.
+# Reproduce the audit with the commands in docs/DEPLOYMENT.md, section 10.
+# ---------------------------------------------------------------------------
+
+# --- Secrets / environment (NEVER commit) ---------------------------------
+# Templates are tracked: only files holding values are excluded.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+# `*.secret` alone did not cover the files the application itself generates:
+# resolveSecret() persists `<DATA_DIR>/.secret-<NOM>`, so a DATA_DIR pointing
+# anywhere other than ./data left those secrets committable. Both patterns are
+# kept so the naming is covered wherever the file is written.
+*.secret
+**/.secret-*
+secrets/
+# Temporary admin password written by `npm run admin:bootstrap`.
+**/bootstrap-admin-password
+**/.session-secret
+
+# --- Runtime data (database, uploads, generated outbox) -------------------
+# Everything under data/ is produced by a running instance: the SQLite base
+# and its journals, uploaded media, the temporary admin password, generated
+# .secret-* files. Nothing there is source, so the whole directory is excluded.
+# `data/` is deliberately one exact line (verified with this repository's Git 2.39):
+#  - `scripts/lint.js` requires the lines .env, data/, *.db, node_modules/ here,
+#    so `npm run lint`, `npm run check` and CI stay green only if it is present;
+#  - pruning the whole directory is also the strongest form: no pattern can
+#    re-include anything under it, so a loosened rule cannot expose the base.
+# A file that genuinely has to live in data/ (none exists today) is then added
+# explicitly and only after a secret review:
+#     git check-ignore -v data/<chemin>   # which rule blocks it
+#     git add -f data/<chemin>            # after verifying nothing secret
+# The looser `data/**` form plus `!data/seeds/` and `!data/seeds/**` would also
+# track such a file, but no longer satisfies the lint line above.
+data/
+# Independent safety nets: if `data/` ever disappeared, these still keep the
+# runtime artefacts out of the index.
+data/**
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+uploads/
+tmp/
+
+# --- Build output (regenerated, never hand-edited) ------------------------
+# `npm run build` recreates dist/ from tracked sources (Vite, build.outDir =
+# dist) and the Dockerfile runs that build inside the image, so the served SPA
+# needs no committed artefact.
+dist/
+dist-client/
+coverage/
+
+# --- Node / build ---
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnpm-store/
+*.tsbuildinfo
+.cache/
+.vite/
+
+# --- Editor / OS junk ---
+.DS_Store
+Thumbs.db
+.idea/
+# Only .vscode/settings.json is personal; a shared extensions recommendation
+# stays versionnable.
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# --- Local runtime noise ---
+logs/
+*.log
+
+# --- Local compose overrides (deployment specific, not shared) ------------
+docker-compose.override.yml
+docker-compose.override.yaml

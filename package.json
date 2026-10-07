@@ -1,0 +1,42 @@
+{
+  "name": "princesamba-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PrinceNsamba AI - orchestrateur d'agents de developpement logiciel : plan de controle full-stack (authentification Argon2id, RBAC, audit, fichiers/documents/URL, interface admin React) conteneurise.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "worker": "node scripts/video-worker.js",
+    "worker:once": "node scripts/video-worker.js --once",
+    "build": "vite build",
+    "db:migrate": "node src/db/migrate.js",
+    "admin:bootstrap": "node scripts/bootstrap-admin.js",
+    "test": "node --test --test-concurrency=1 \"tests/*.test.js\"",
+    "test:one": "node --test --test-concurrency=1",
+    "smoke": "node scripts/smoke-test.js",
+    "audit": "node scripts/security-audit.js",
+    "lint": "node scripts/lint.js",
+    "compose:up": "docker compose up -d --build",
+    "compose:down": "docker compose down",
+    "compose:logs": "docker compose logs -f app",
+    "compose:test": "docker compose --profile test run --rm test",
+    "check": "npm run lint && npm test && npm run audit"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.7.1",
+    "express": "^4.21.2",
+    "helmet": "^8.1.0",
+    "multer": "^2.0.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.11"
+  }
+}

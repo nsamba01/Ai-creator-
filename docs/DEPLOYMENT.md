@@ -1,0 +1,350 @@
+# Déploiement
+
+## 1. Avec Docker Compose (recommandé)
+
+Deux fichiers sont fournis à la racine : `Dockerfile` (multi-étapes, image finale sans
+toolchain) et `docker-compose.yml`.
+
+```bash
+cp .env.example .env
+# obligatoires : SECRET_ALLOW_GENERATED=0, et deux secrets longs
+printf 'SESSION_SECRET=%s\nSTATE_SECRET=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" >> .env
+# premier démarrage uniquement : laisser BOOTSTRAP_ADMIN=1, l'administrateur se connecte
+# avec le mot de passe écrit dans le volume, puis le change immédiatement
+docker compose up -d --build
+docker compose logs -f app
+docker compose --profile smoke run --rm smoke     # les contrôles de `npm run smoke` contre l'instance réelle (42 sur une instance aux réglages par défaut ; moins quand des capacités sont déjà activées, le script n'exécute pas ce qui ne s'applique pas)
+docker compose port app 3000                       # vérifie l'adresse publiée
+docker compose --profile test run --rm test       # lint + 274 tests + audit de sécurité
+```
+
+Arrêt, nettoyage, mise à jour :
+
+```bash
+docker compose down                  # le volume princesamba_data est conservé
+docker compose build && docker compose up -d
+docker volume ls | grep princesamba_data
+```
+
+### Ce que fait la composition
+
+| Service | Rôle |
+|---|---|
+| `volume-init` | one-shot **root** avec `CHOWN`/`FOWNER` uniquement : rend `princesamba_data` lisible/écrivable par l'UID 10001, puis s'arrête ; `app` l'attend via `service_completed_successfully` |
+| `app` | l'application, image cible `production`, système de fichiers **en lecture seule**, volume monté sur `/app/data`, ports publiés `${APP_BIND:-127.0.0.1}:${APP_PORT:-3000}` (boucle locale par défaut) |
+| `worker` | **processus séparé** de l'agent vidéo : réclame les tâches de `video_jobs`, sonde, produit vignettes et pistes audio. `network_mode: none` (il ne doit rien pouvoir contacter), `read_only` avec un `tmpfs` de travail, `cap_drop: [ALL]`, `no-new-privileges`, `cpus`/`mem_limit`/`pids_limit` bornés, `depends_on: app: service_healthy` pour ne pas courir après les migrations. Variables : `VIDEO_WORKER_KINDS` (défaut `probe` — `thumbnail` est un choix explicite), `VIDEO_WORKER_POLL_MS`, `FFMPEG_PATH`, `VIDEO_TOOL_TIMEOUT_MS` |
+| `smoke` | profil `smoke`, attend `service_healthy` puis lance `node scripts/smoke-test.js` |
+| `test` | profil `test`, image cible `test` (dépendances de développement incluses), lance lint + tests + audit |
+
+Durcissement appliqué aux conteneurs applicatifs : `cap_drop: [ALL]`,
+`security_opt: [no-new-privileges:true]`, `read_only: true`, `tmpfs /tmp` en `noexec`,
+`restart: unless-stopped`, rotation des logs (`json-file`, 4 Mo × 4).
+
+### Entrypoint
+
+`docker/entrypoint.sh` (POSIX `sh`, `set -eu`, `umask 077`) prépare un volume monté
+**vierge** avant l'exécution : répertoires de données, secrets `SESSION_SECRET` /
+`STATE_SECRET` générés et écrits en `0600` dans `DATA_DIR/.secret-*` **uniquement si
+absents**, migrations, puis `exec "$@"`. Les secrets existants ne sont jamais
+écrasés : ils sont relus au démarrage suivant (`src/config/env.js`, source `volume`).
+
+Les mêmes commandes ont des alias npm : `npm run compose:up`, `compose:down`,
+`compose:logs`, `compose:test`.
+
+**Ouvrir le traitement des médias** (vignettes, pistes audio) est un acte en deux temps, et
+l'image ne le fait pas toute seule : `ffmpeg` n'est pas embarqué (le Dockerfile n'installe aucun
+décodeur), donc il faut soit l'ajouter au worker via une image dérivée
+(`RUN apk add --no-cache ffmpeg`), soit monter un binaire existant. Ensuite seulement, ouvrir le
+réglage `video.tools_enabled` (page Configuration, ou `PUT /api/admin/settings`). Tant que l'un
+des deux manque, le comportement est délibérément visible et non simulé : la tâche est acceptée
+(`202`), le worker la refuse (`VIDEO_TOOL_UNAVAILABLE` 503 côté service, code d'erreur `VIDEO_TOOL_UNAVAILABLE`
+dans la ligne de file), et le refus est journalisé. Le worker annonce d'ailleurs au démarrage, en
+toutes lettres, s'il voit `ffprobe` et `ffmpeg`, et si la capacité est ouverte.
+
+Un réglage de cadence n'existe pas en base : `VIDEO_WORKER_POLL_MS` et `VIDEO_TOOL_TIMEOUT_MS`
+viennent de l'environnement, parce que ce sont des propriétés du processus. Les plafonds de
+production (taille de vignette, position de lecture, durée de piste) sont des réglages en base,
+pour pouvoir être fermés sans redéploiement.
+
+## 2. Configuration
+
+55 variables sont documentées dans `.env.example` (dont huit lues uniquement par Docker Compose
+ou par les outils : `APP_BIND`, `APP_PORT`, `SMOKE_*`) ; `node scripts/lint.js` vérifie que
+**toute variable lue par le code est documentée et réciproquement** — un nouveau `process.env.X`
+sans ligne dans `.env.example` casse le lint.
+
+Les plus importantes :
+
+| Variable | Défaut | Effet si mal réglée |
+|---|---|---|
+| `SESSION_SECRET`, `STATE_SECRET` | — | refus du démarrage en production si absent, < 32 caractères ou placeholder connu |
+| `SECRET_ALLOW_GENERATED` | `0` | seul opt-in qui autorise une génération automatique en production |
+| `COOKIE_SECURE` / `COOKIE_SAMESITE` | `auto` / `strict` | `none` sans `secure` = refus |
+| `CSRF_PROTECTION` | `1` | `0` en production = refus |
+| `SECURE_PROXY` | `0` | à activer **uniquement** derrière un reverse proxy de confiance, sinon l'en-tête `X-Forwarded-For` permet de tromper le débitmètre |
+| `URL_ALLOW_PRIVATE_HOSTS` | `0` | `1` transforme l'application en proxy interne : journalisé comme avertissement |
+| `MAX_UPLOAD_MB` / `MAX_QUOTA_MB` | `10` / `500` | tailles refusées au-delà, quota par utilisateur |
+| `LOGIN_MAX_ATTEMPTS` / `ACCOUNT_LOCK_MINUTES` | `5` / `30` | verrouillage de compte, persistant en base |
+| `DATA_DIR` / `DB_PATH` / `UPLOAD_DIR` | `./data` | doit être un volume montable, seul chemin persistant |
+| `BOOTSTRAP_ADMIN` | `1` | à remettre à `0` après la création du premier administrateur |
+| `DISABLE_AUTH_FOR_TESTS` | `0` | ignoré silencieusement hors tests unitaires ; présent en production = refus |
+
+## 3. Reverse proxy et TLS
+
+L'application ne termine **pas** le TLS. Exemple Caddy :
+
+```
+app.example.com {
+  reverse_proxy 127.0.0.1:3000
+}
+```
+
+Puis dans `.env` : `PUBLIC_BASE_URL=https://app.example.com`, `COOKIE_SECURE=1`,
+`COOKIE_PREFIX=__Host-`, `SECURE_PROXY=1`, `CORS_ALLOWED_ORIGINS=https://app.example.com`.
+Avec un préfixe `__Host-`, le navigateur refuse que le cookie soit posé sans `Secure`,
+sans `Path=/` et sans domaine : le réglage est auto-contrôlant.
+
+Nginx : `proxy_set_header X-Forwarded-Proto $scheme;` et `X-Forwarded-For $proxy_add_x_forwarded_for;`,
+`client_max_body_size` **inférieur ou égal** à `MAX_UPLOAD_MB` (sinon c'est Nginx qui renvoie
+une page d'erreur au lieu de l'API), `proxy_read_timeout 60s`.
+
+## 4. Premier administrateur
+
+```bash
+docker compose exec app node scripts/bootstrap-admin.js --email admin@exemple.fr --username admin
+```
+
+Trois niveaux existent, dans cet ordre de priorité :
+
+1. `BOOTSTRAP_ADMIN_PASSWORD` dans l'environnement — réservé à un déploiement piloté
+   (secrets manager), ne pas mettre de mot de passe dans un fichier versionné ;
+2. `--password-file <chemin>` — lecture d'un fichier, jamais de l'argument de ligne de
+   commande (il serait visible dans `ps`) ;
+3. sans les deux, un mot de passe **provisoire** est généré, écrit en `0600` dans
+   `DATA_DIR/bootstrap-admin-password`, et le compte est marqué `must_change_password`.
+
+Cas limites traités explicitement (`src/services/bootstrap.service.js`) : compte déjà
+présent (réinstallation, pas d'écrasement du mot de passe), empreinte différente (réservé,
+refus), **dernier administrateur verrouillé** (refus), mot de passe non conforme à la
+politique (refus et aucun compte créé), mot de passe par défaut (refus et le compte est
+marqué pour changement immédiat).
+
+### 4.1 Environnement éphémère : laisser le compte se recréer tout seul
+
+Un environnement de test (bac à sable, instance Docker sans volume nommé) perd `DATA_DIR` à la
+moindre réinitialisation : la base `data/app.db` n'est **pas** sur GitHub, volontairement — elle
+contient les empreintes de mots de passe, les sessions, les jetons de rafraîchissement et le
+journal d'audit (`git check-ignore -v data/app.db` répond `data/`). Pour ne pas dépendre de sa
+survie, le mot de passe du premier administrateur peut venir du fichier `.env` **local** :
+
+```bash
+# .env — permissions 0600, exclu de Git par la règle `.env` de .gitignore (jamais versionné)
+BOOTSTRAP_ADMIN=1
+BOOTSTRAP_ADMIN_USERNAME=admin
+BOOTSTRAP_ADMIN_EMAIL=admin@exemple.fr
+BOOTSTRAP_ADMIN_PASSWORD=<le mot de passe choisi>
+```
+
+Au démarrage, `src/server.js` appelle `bootstrapAdmin` (`src/config/env.js` relit ces clés) : si
+aucun administrateur n'existe, le compte est créé avec ce mot de passe ; s'il en existe déjà, rien
+n'est écrasé. Le fichier n'apparaît dans aucun commit, aucune image (`.dockerignore` exclut
+`.env`), aucun journal, aucun bundle client — `git grep` et une recherche dans `dist/` le
+vérifient.
+
+**À savoir** : un compte créé par ce chemin porte toujours `must_change_password = 1`. Tant que ce
+drapeau est posé, toute route autre que l'authentification répond `403 PASSWORD_CHANGE_REQUIRED`.
+La voie soutenue pour le lever est le changement de mot de passe (qui exige une valeur
+**différente** : `POST /api/auth/change-password`, ou Profil → Mot de passe). Sur un environnement
+jetable où l'on veut conserver la valeur du `.env`, le drapeau se lève directement en base :
+
+```bash
+node -e "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync('data/app.db');\
+db.exec('PRAGMA busy_timeout=5000');\
+console.log(db.prepare(\"update users set must_change_password=0 where username='admin'\").run().changes)"
+```
+
+Ce n'est pas un raccourci acceptable en production : le drapeau existe pour qu'un secret
+d'environnement ne survive pas à l'installation.
+
+### 4.2 Reprendre la main sur le compte administrateur
+
+Si le mot de passe n’est plus connu (environnement recréé, base restaurée, mot de passe
+partagé puis perdu), la reprise passe par le script, pas par une réinitialisation « par email » :
+
+```bash
+npm run admin:bootstrap -- --rotate        # équivaut à: node scripts/bootstrap-admin.js --rotate
+cat data/bootstrap-admin-password          # le mot de passe provisoire, 0600 — le seul endroit où il est écrit
+# connexion avec ce provisoire, puis changement immédiat (le compte est marqué must_change_password)
+rm data/bootstrap-admin-password           # le script le laisse exprès : à supprimer après lecture
+```
+
+`--rotate` régénère un mot de passe fort, révoque **toutes** les sessions du compte, remet
+`failed_login_attempts` à zéro et déverrouille le compte (`locked_until = NULL`) — c’est aussi le
+geste qui débloque un administrateur après `LOGIN_MAX_ATTEMPTS` échecs. Il ne prend **pas** un mot
+de passe choisi en argument : un mot de passe voulu se pose après connexion, par l’interface
+(Profil → Mot de passe) ou par `POST /api/auth/change-password` ; `--password-file` ne vaut que pour
+une **création** (le compte existant n’est jamais écrasé par le script).
+
+La route `POST /api/auth/password-reset/request` existe et ne révèle pas l’existence du compte
+(réponse `202` identique dans tous les cas) ; le jeton d’usage unique qu’elle émet n’est renvoyé dans
+la réponse **qu’hors production**, et aucune expédition d’e-mail n’est configurée. L’interface, elle,
+ne propose pas d’écran « mot de passe oublié » : en production, `--rotate` est la voie de recours.
+
+## 5. Sauvegarde et restauration
+
+```bash
+# sauvegarde cohérente (checkpoint WAL avant copie) ; note : aucun binaire sqlite3 n'est requis
+docker compose exec app node -e "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(process.env.DB_PATH);db.exec('PRAGMA wal_checkpoint(TRUNCATE);');db.close()"
+docker run --rm -v princesamba_data:/data -v "$PWD:/backup" alpine \
+  tar czf /backup/psai-$(date -u +%Y%m%dT%H%M%SZ).tar.gz -C /data .
+```
+
+La restauration est le `tar xzf` inverse dans le volume, puis `docker compose up -d`.
+Le fichier de secrets `.secret-*` **doit** être sauvegardé avec la base : sans la clé
+HMAC d'origine, toutes les sessions, jetons de rafraîchissement et empreintes d'adresses
+deviennent illisibles (les utilisateurs sont déconnectés, aucun compte n'est perdu).
+Politique recommandée : quotidienne, 30 jours, hors du serveur, chiffrée au repos.
+
+## 6. Sans Docker
+
+```bash
+npm ci
+npm run build                  # génère dist/ (sinon l'API répond mais pas l'interface)
+NODE_ENV=production PORT=3000 DATA_DIR=/var/lib/princesamba node src/server.js
+```
+
+Unité systemd : `DynamicUser=yes`, `StateDirectory=princesamba`, `ProtectSystem=strict`,
+`ReadWritePaths=/var/lib/princesamba`, `PrivateTmp=yes`, `NoNewPrivileges=yes`,
+`CapabilityBoundingSet=`vide, `EnvironmentFile=/etc/princesamba/env`. L'application ne
+doit écrire que dans `DATA_DIR`.
+
+Le worker se déploie comme une seconde unité sur le même fichier d'environnement, avec son propre
+durcissement (`IPAddressAllow=none` n'a pas de sens sans réseau : on lui donne `PrivateNetwork=yes`,
+l'équivalent de `network_mode: none`), et peut aussi tourner en cron par `npm run worker:once` — un
+tour puis sortie, ce qui suffit à faire avancer la file sans processus permanent :
+
+```ini
+[Service]
+ExecStart=/usr/bin/npm run worker
+EnvironmentFile=/etc/princesamba/env
+PrivateNetwork=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/princesamba
+TimeoutStopSec=30
+```
+
+Sans `ffmpeg` installé, le service tourne et refuse nommément les tâches lourdes : c'est l'état
+attendu, pas une installation cassée.
+
+## 7. Mises à jour et retours arrière
+
+* Les migrations sont montantes et horodatées avec une empreinte SHA-256 ; une migration
+  déjà appliquée est **refusée** si son contenu change (`docs/TESTING.md` § migrations).
+  Une correction se fait donc dans un nouveau fichier numéroté, jamais en retouchant un
+  fichier appliqué.
+* Avant une mise à jour : sauvegarder le volume (point 5). L'image est taguée
+  `princesamba-ai:local` : avant de reconstruire, `docker tag princesamba-ai:local
+  princesamba-ai:avant`, puis en cas d'échec `docker tag princesamba-ai:avant
+  princesamba-ai:local && docker compose up -d --no-build` (si la base a migré, restaurer
+  aussi le volume : les migrations ne sont pas descendantes).
+* `docker compose exec app node src/db/migrate.js` est idempotent et sert de vérification.
+
+## 8. Contrôle de sécurité automatisé
+
+```bash
+npm run audit            # secrets, index Git, permissions, gardes de config, Docker, npm audit
+npm run audit -- --strict   # exit code non nul dès qu'un constat reste ouvert
+```
+
+Résultats mesurés le 2026-10-02 dans cet environnement : `ACTION NON EXÉCUTÉE` pour la
+construction de l'image (ni `docker` ni `podman` dans le bac à sable) — voir le rapport de
+session ; la validation statique des deux fichiers (analyse YAML, `sh -n`, recherche des
+motifs) a été exécutée à la place.
+
+## 9. Chaîne d'intégration continue
+
+> **Le fichier de workflow n'est pas sous `.github/workflows/`, et ce n'est pas un oubli.**
+> Il est fourni sous `ci/github-workflows-ci.yml` : le jeton de l'agent (GitHub App) n'a pas
+> la permission `workflows`, et GitHub refuse toute écriture créant ou modifiant un fichier
+> sous `.github/workflows/` sans cette permission. Mesuré le 2026-10-04, le refus exact du
+> dépôt distant :
+>
+>     ! [remote rejected] refusing to allow a GitHub App to create or update workflow
+>       `.github/workflows/ci.yml` without `workflows` permission
+>
+> Pour l'activer, avec un jeton qui possède cette permission (ou depuis votre propre
+> compte) :
+>
+>     mkdir -p .github/workflows
+>     cp ci/github-workflows-ci.yml .github/workflows/ci.yml
+>     git add .github/workflows/ci.yml && git commit -m "CI" && git push
+>
+> (ou accorder `Workflows: write` à l'application GitHub, puis relancer la commande).
+> Le contenu est vérifié localement : les mêmes étapes (`lint`, `test`, `build`, `smoke`,
+> `audit -- --strict`) passent dans cet environnement.
+
+Trois emplois : `quality` (lint, 274 tests, build Vite, instance de production réellement
+démarrée puis smoke test, audit `--strict` avec artefact JSON de 14 jours), `docker`
+(`docker compose config -q`, construction des deux cibles `production` et `test`, chaîne de
+qualité exécutée dans le conteneur de test, `up -d --build` puis smoke), `docs` (les
+commandes citées dans la documentation existent réellement, les fichiers de déploiement et
+les six fichiers de documentation sont présents, `sh -n` sur l'entrypoint).
+
+Aucun secret n'y est écrit : les valeurs sont générées par le job (`openssl rand -hex 32`),
+le mot de passe administrateur de test transite par un fichier temporaire `0600` passé à
+`--password-file` puis supprimé, et le `.env` du job Docker est créé de zéro (pas de copie
+de `.env.example` : Compose applique la dernière valeur rencontrée, un doublon rendrait le
+résultat ambigu).
+
+## 10. Audit des règles d'exclusion
+
+`.gitignore` et `.dockerignore` sont contrôlés règle par règle. Les commandes ci-dessous sont
+celles qui ont servi à l'audit du 2026-10-07 ; elles ne modifient rien.
+
+```bash
+git ls-files | wc -l                                            # fichiers suivis
+git ls-files --others --exclude-standard                        # fichiers nécessaires oubliés
+git ls-files --others --ignored --exclude-standard              # ce que les règles bloquent
+git status --ignored --short                                    # même lecture, format compact
+git check-ignore -v <chemin>                                    # règle qui frappe un chemin
+git ls-files -i -c --exclude-standard                           # doit être vide : un fichier
+                                                                # suivi contredisant une règle
+git config --show-origin --get core.excludesfile                # fichier d'exclusion global
+cat "$(git rev-parse --git-dir)/info/exclude"                    # exclusions locales du clone
+find . -name .gitignore -not -path './node_modules/*'           # règles imbriquées éventuelles
+```
+
+Le sort des fichiers dans le contexte de build Docker se mesure en rejouant `.dockerignore` dans
+un dépôt de test (le moteur d'exclusion est le même) : `git add -n` y énumère ce qui serait retenu.
+
+```bash
+mkdir -p /tmp/dprobe/docs && cd /tmp/dprobe && git init -q .
+cp "$OLDPWD/.dockerignore" .gitignore
+touch .env .env.example README.md docs/DEPLOYMENT.md data/app.db
+git add -A -n .            # ce que Docker copie réellement dans l'image
+```
+
+`git check-ignore -f .dockerignore` n'est **pas** utilisable ici : il annonce « non ignoré » y compris
+pour `.env`, que la règle exclut bien. La vérification fiable reste le comportement de `git add`.
+
+Deux propriétés de ce moteur d'exclusion sont vérifiées plutôt que supposées :
+
+- une négation placée **après** l'exclusion d'un répertoire ne réintègre **rien** : un fichier ne
+  peut être réinclus si son répertoire parent est exclu. La règle `data/` est donc verrouillante
+  (pour un fichier réellement nécessaire là où, utiliser `git add -f` après contrôle de
+  sensibilité) ; la forme `data/**` suivie de `!data/seeds/` puis `!data/seeds/**` devient, elle,
+  sélective ;
+- `scripts/lint.js` exige les lignes exactes `.env`, `data/`, `*.db` et `node_modules/` dans
+  `.gitignore`, et `.git`, `.env`, `node_modules`, `data/` dans `.dockerignore`. Une réécriture de
+  ces fichiers qui supprimerait l'une de ces lignes fait échouer `npm run lint`, donc
+  `npm run check` et l'intégration continue. Le contrôle se fait avec `npm run lint`.
+
+`.dockerignore` exclut donc `docs/*` et non `docs/` : dans le second cas, la négation
+`!docs/DEPLOYMENT.md` serait inopérante et le guide ne serait pas copié dans l'image.
+
+Deux règles protègent les fichiers que l'application génère elle-même :
+`**/bootstrap-admin-password` (mot de passe temporaire écrit par `npm run admin:bootstrap`) et
+`**/.secret-*` (clés `SESSION_SECRET`/`STATE_SECRET` persistées par `resolveSecret` lorsque
+l'environnement ne les fournit pas). Sans la seconde, un `DATA_DIR` pointant hors de `data/`
+rendait ces secrets versionnables. `npm run audit` les vérifie : il scanne les fichiers ignorés et
+signale toute **fuite**, c'est-à-dire un secret effectivement suivi par Git.

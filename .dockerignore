@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# PrinceNsamba AI - Docker build context exclusions
+# Nothing secret, nothing heavy, nothing host specific enters the image.
+# ---------------------------------------------------------------------------
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-wal
+*.db-shm
+uploads/
+tmp/
+logs/
+coverage/
+node_modules
+dist
+dist-client
+npm-debug.log*
+Dockerfile
+docker-compose.yml
+docker-compose.*.yml
+README.md
+# `docs/*` and not `docs/` : excluding the directory would make the
+# `!docs/DEPLOYMENT.md` exception below inert (a file cannot be re-included
+# while its parent directory is excluded).
+docs/*
+Unselected files/
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+*.md
+!docs/DEPLOYMENT.md
+.github/
+.editorconfig
+.secrets
+.secret-*

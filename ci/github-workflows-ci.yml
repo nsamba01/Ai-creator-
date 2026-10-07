@@ -1,0 +1,179 @@
+name: CI
+
+# Chaîne de qualité du dépôt. Trois emplois :
+#   quality — lint, 248 tests, build de l'interface, smoke contre une instance réelle, audit
+#   docker  — construction de l'image de production et exécution de la composition
+#   docs    — vérification que la documentation cite des commandes qui existent
+#
+# Aucun jeton n'est lu ici : le workspace n'a que `contents: read`.
+
+on:
+  push:
+    branches: [main, 'arena/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint, tests, build, smoke, audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Installation (verrouillée)
+        run: npm ci
+
+      - name: Lint statique (portique maison)
+        run: npm run lint
+
+      - name: Suite de tests
+        run: npm test
+
+      - name: Build de l'interface
+        run: npm run build
+
+      - name: Démarrage d'une instance de production
+        run: |
+          set -euo pipefail
+          printf 'SESSION_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          printf 'STATE_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          printf 'SMOKE_PASSWORD=Ci-%s-Alpha1!\n' "$(date +%s)" >> "$GITHUB_ENV"
+          printf 'SMOKE_NEW_PASSWORD=Ci-%s-Beta2!\n' "$(date +%s)" >> "$GITHUB_ENV"
+          mkdir -p ci-data
+          NODE_ENV=production HOST=127.0.0.1 PORT=3000 DATA_DIR="$PWD/ci-data" \
+          COOKIE_SECURE=0 COOKIE_SAMESITE=lax SECRET_ALLOW_GENERATED=1 \
+          BOOTSTRAP_ADMIN=0 LOG_LEVEL=info \
+          node src/server.js > ci-server.log 2>&1 &
+          echo $! > ci-server.pid
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:3000/healthz >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "--- journal serveur ---"; cat ci-server.log; exit 1
+
+      - name: Compte administrateur de test (mot de passe jamais écrit dans le dépôt)
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$SMOKE_PASSWORD" > ci-admin-password
+          node scripts/bootstrap-admin.js --email ci@example.local --username ciadmin \
+            --password-file ci-admin-password
+          rm -f ci-admin-password
+
+      - name: Smoke test contre l'instance en cours d'exécution
+        env:
+          SMOKE_BASE_URL: http://127.0.0.1:3000
+          SMOKE_EMAIL: ci@example.local
+        run: node scripts/smoke-test.js
+
+      - name: Arrêt de l'instance
+        if: always()
+        run: |
+          kill "$(cat ci-server.pid)" 2>/dev/null || true
+          sleep 2
+          if [ -f ci-server.log ]; then tail -n 40 ci-server.log; fi
+
+      - name: Audit de sécurité
+        run: npm run audit -- --strict
+
+      - name: Journal d'audit (artefact)
+        if: always()
+        run: |
+          mkdir -p audit-report
+          npm run audit -- --json > audit-report/audit.json || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-audit
+          path: audit-report/
+          retention-days: 14
+          if-no-files-found: warn
+
+  docker:
+    name: Image et composition Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validation statique de la composition
+        run: docker compose config -q
+
+      - name: Construction de l'image de production
+        run: docker build --target production -t princesamba-ai:ci .
+
+      - name: Construction de l'image de test
+        run: docker build --target test -t princesamba-ai:ci-test .
+
+      - name: Chaîne de qualité dans le conteneur de test
+        run: |
+          docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+            -e NODE_ENV=test princesamba-ai:ci-test
+
+      - name: Démarrage complet et smoke test
+        run: |
+          set -euo pipefail
+          # .env écrit de zéro (pas de copie de .env.example) : Compose applique la
+          # dernière valeur rencontrée, et un fichier qui en double un autre rend le
+          # résultat ambigu. Tout le reste vient des défauts de docker-compose.yml.
+          {
+            printf 'SESSION_SECRET=%s\n' "$(openssl rand -hex 32)"
+            printf 'STATE_SECRET=%s\n' "$(openssl rand -hex 32)"
+            printf 'BOOTSTRAP_ADMIN=1\nBOOTSTRAP_ADMIN_EMAIL=smoke@example.local\n'
+            printf 'COOKIE_SECURE=0\nCOOKIE_SAMESITE=lax\n'
+            printf 'SMOKE_EMAIL=smoke@example.local\n'
+            printf 'SMOKE_NEW_PASSWORD=Smoke-%s-Alpha1!\n' "$(date +%s)"
+          } > .env
+          chmod 600 .env
+          docker compose up -d --build
+          docker compose ps
+          # le mot de passe temporaire du bootstrap est lu depuis le volume
+          # (SMOKE_PASSWORD_FILE, monté en lecture seule dans le service smoke)
+          docker compose --profile smoke run --rm smoke
+      - name: Journal de l'application (toujours)
+        if: always()
+        run: docker compose logs --no-color app | tail -n 80
+      - name: Nettoyage
+        if: always()
+        run: docker compose down -v --remove-orphans && rm -f .env
+
+  docs:
+    name: Cohérence de la documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Les commandes citées dans docs/ existent
+        run: |
+          set -euo pipefail
+          missing=0
+          for cmd in $(grep -hoE 'npm (run|ci|test|install) [a-zA-Z0-9:_-]+' docs/*.md README.md | awk '{print $NF}' | sort -u); do
+            case "$cmd" in
+              ci|test|install) continue ;;
+            esac
+            if ! node -e "const s=require('./package.json').scripts; if(!Object.keys(s).includes(process.argv[1])) process.exit(1)" "$cmd"; then
+              echo "· commande inconnue documentée : npm run $cmd"; missing=1
+            fi
+          done
+          for f in Dockerfile docker-compose.yml docker/entrypoint.sh .env.example .dockerignore .gitignore; do
+            [ -f "$f" ] || { echo "· fichier manquant : $f"; missing=1; }
+          done
+          for f in docs/ARCHITECTURE.md docs/SECURITY.md docs/SECURITY-POLICY.md docs/DEPLOYMENT.md docs/TESTING.md docs/VIDEO-AGENT.md; do
+            [ -f "$f" ] || { echo "· documentation manquante : $f"; missing=1; }
+          done
+          grep -q 'URL_ALLOW_PRIVATE_HOSTS' .env.example || { echo '· .env.example incomplet'; missing=1; }
+          sh -n docker/entrypoint.sh
+          exit "$missing"
