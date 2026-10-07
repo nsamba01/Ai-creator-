@@ -23,7 +23,10 @@ Dockerfile
 docker-compose.yml
 docker-compose.*.yml
 README.md
-docs/
+# `docs/*` and not `docs/` : excluding the directory would make the
+# `!docs/DEPLOYMENT.md` exception below inert (a file cannot be re-included
+# while its parent directory is excluded).
+docs/*
 Unselected files/
 .idea
 .vscode
@@ -34,3 +37,4 @@ Thumbs.db
 .github/
 .editorconfig
 .secrets
+.secret-*

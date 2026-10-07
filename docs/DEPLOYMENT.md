@@ -258,3 +258,56 @@ le mot de passe administrateur de test transite par un fichier temporaire `0600`
 `--password-file` puis supprimé, et le `.env` du job Docker est créé de zéro (pas de copie
 de `.env.example` : Compose applique la dernière valeur rencontrée, un doublon rendrait le
 résultat ambigu).
+
+## 10. Audit des règles d'exclusion
+
+`.gitignore` et `.dockerignore` sont contrôlés règle par règle. Les commandes ci-dessous sont
+celles qui ont servi à l'audit du 2026-10-07 ; elles ne modifient rien.
+
+```bash
+git ls-files | wc -l                                            # fichiers suivis
+git ls-files --others --exclude-standard                        # fichiers nécessaires oubliés
+git ls-files --others --ignored --exclude-standard              # ce que les règles bloquent
+git status --ignored --short                                    # même lecture, format compact
+git check-ignore -v <chemin>                                    # règle qui frappe un chemin
+git ls-files -i -c --exclude-standard                           # doit être vide : un fichier
+                                                                # suivi contredisant une règle
+git config --show-origin --get core.excludesfile                # fichier d'exclusion global
+cat "$(git rev-parse --git-dir)/info/exclude"                    # exclusions locales du clone
+find . -name .gitignore -not -path './node_modules/*'           # règles imbriquées éventuelles
+```
+
+Le sort des fichiers dans le contexte de build Docker se mesure en rejouant `.dockerignore` dans
+un dépôt de test (le moteur d'exclusion est le même) : `git add -n` y énumère ce qui serait retenu.
+
+```bash
+mkdir -p /tmp/dprobe/docs && cd /tmp/dprobe && git init -q .
+cp "$OLDPWD/.dockerignore" .gitignore
+touch .env .env.example README.md docs/DEPLOYMENT.md data/app.db
+git add -A -n .            # ce que Docker copie réellement dans l'image
+```
+
+`git check-ignore -f .dockerignore` n'est **pas** utilisable ici : il annonce « non ignoré » y compris
+pour `.env`, que la règle exclut bien. La vérification fiable reste le comportement de `git add`.
+
+Deux propriétés de ce moteur d'exclusion sont vérifiées plutôt que supposées :
+
+- une négation placée **après** l'exclusion d'un répertoire ne réintègre **rien** : un fichier ne
+  peut être réinclus si son répertoire parent est exclu. La règle `data/` est donc verrouillante
+  (pour un fichier réellement nécessaire là où, utiliser `git add -f` après contrôle de
+  sensibilité) ; la forme `data/**` suivie de `!data/seeds/` puis `!data/seeds/**` devient, elle,
+  sélective ;
+- `scripts/lint.js` exige les lignes exactes `.env`, `data/`, `*.db` et `node_modules/` dans
+  `.gitignore`, et `.git`, `.env`, `node_modules`, `data/` dans `.dockerignore`. Une réécriture de
+  ces fichiers qui supprimerait l'une de ces lignes fait échouer `npm run lint`, donc
+  `npm run check` et l'intégration continue. Le contrôle se fait avec `npm run lint`.
+
+`.dockerignore` exclut donc `docs/*` et non `docs/` : dans le second cas, la négation
+`!docs/DEPLOYMENT.md` serait inopérante et le guide ne serait pas copié dans l'image.
+
+Deux règles protègent les fichiers que l'application génère elle-même :
+`**/bootstrap-admin-password` (mot de passe temporaire écrit par `npm run admin:bootstrap`) et
+`**/.secret-*` (clés `SESSION_SECRET`/`STATE_SECRET` persistées par `resolveSecret` lorsque
+l'environnement ne les fournit pas). Sans la seconde, un `DATA_DIR` pointant hors de `data/`
+rendait ces secrets versionnables. `npm run audit` les vérifie : il scanne les fichiers ignorés et
+signale toute **fuite**, c'est-à-dire un secret effectivement suivi par Git.
