@@ -129,7 +129,44 @@ refus), **dernier administrateur verrouillé** (refus), mot de passe non conform
 politique (refus et aucun compte créé), mot de passe par défaut (refus et le compte est
 marqué pour changement immédiat).
 
-### 4.1 Reprendre la main sur le compte administrateur
+### 4.1 Environnement éphémère : laisser le compte se recréer tout seul
+
+Un environnement de test (bac à sable, instance Docker sans volume nommé) perd `DATA_DIR` à la
+moindre réinitialisation : la base `data/app.db` n'est **pas** sur GitHub, volontairement — elle
+contient les empreintes de mots de passe, les sessions, les jetons de rafraîchissement et le
+journal d'audit (`git check-ignore -v data/app.db` répond `data/`). Pour ne pas dépendre de sa
+survie, le mot de passe du premier administrateur peut venir du fichier `.env` **local** :
+
+```bash
+# .env — permissions 0600, exclu de Git par la règle `.env` de .gitignore (jamais versionné)
+BOOTSTRAP_ADMIN=1
+BOOTSTRAP_ADMIN_USERNAME=admin
+BOOTSTRAP_ADMIN_EMAIL=admin@exemple.fr
+BOOTSTRAP_ADMIN_PASSWORD=<le mot de passe choisi>
+```
+
+Au démarrage, `src/server.js` appelle `bootstrapAdmin` (`src/config/env.js` relit ces clés) : si
+aucun administrateur n'existe, le compte est créé avec ce mot de passe ; s'il en existe déjà, rien
+n'est écrasé. Le fichier n'apparaît dans aucun commit, aucune image (`.dockerignore` exclut
+`.env`), aucun journal, aucun bundle client — `git grep` et une recherche dans `dist/` le
+vérifient.
+
+**À savoir** : un compte créé par ce chemin porte toujours `must_change_password = 1`. Tant que ce
+drapeau est posé, toute route autre que l'authentification répond `403 PASSWORD_CHANGE_REQUIRED`.
+La voie soutenue pour le lever est le changement de mot de passe (qui exige une valeur
+**différente** : `POST /api/auth/change-password`, ou Profil → Mot de passe). Sur un environnement
+jetable où l'on veut conserver la valeur du `.env`, le drapeau se lève directement en base :
+
+```bash
+node -e "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync('data/app.db');\
+db.exec('PRAGMA busy_timeout=5000');\
+console.log(db.prepare(\"update users set must_change_password=0 where username='admin'\").run().changes)"
+```
+
+Ce n'est pas un raccourci acceptable en production : le drapeau existe pour qu'un secret
+d'environnement ne survive pas à l'installation.
+
+### 4.2 Reprendre la main sur le compte administrateur
 
 Si le mot de passe n’est plus connu (environnement recréé, base restaurée, mot de passe
 partagé puis perdu), la reprise passe par le script, pas par une réinitialisation « par email » :
